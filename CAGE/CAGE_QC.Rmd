@@ -1,0 +1,257 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-07-18"
+---
+
+# Associate peaks to genes/TSS helper
+```{r}
+library(GenomicRanges)
+library(IRanges)
+library(S4Vectors)
+
+# association based on distance to TSS; flank is when distance up to 500 bp, higher results in none.. overlap is special case, which overwrites default when TSS overlaps the peak
+#' Annotate peaks with their gene + add nearest TSS
+#'
+#' @param gtf A GTF as a data.frame (from readGFF) or a GRanges with a `type=="gene"` column and optional `gene_name`/`gene_id` in its mcols.
+#' @param peaks A GRanges of cage peaks.
+#' @param flank_threshold Integer; max distance to call a “flank” (default 500).
+#' @return The same GRanges `peaks` but with three new mcols:
+#'         - closest_tss_id  
+#'         - closest_distance_to_tss  
+#'         - association_type  (“overlap”/“flank”/“none”)
+#'         
+#'         
+annotateNearestTSS <- function(gtf, peaks, flank_threshold = 500) {
+  ## Turn GTF into GRanges if needed
+  if (is.data.frame(gtf)) {
+    gtf_gr <- makeGRangesFromDataFrame(
+      gtf,
+      seqnames.field     = "seqid",
+      start.field        = "start",
+      end.field          = "end",
+      strand.field       = "strand",
+      keep.extra.columns = TRUE
+    )
+  } else if (inherits(gtf, "GRanges")) {
+    gtf_gr <- gtf
+  } else {
+    stop("`gtf` must be a data.frame or GRanges")
+  }
+  
+  ##  Try to standardize seqlevels style, but don't fail if it can't
+  tryCatch({
+    seqlevelsStyle(gtf_gr) <- "UCSC"
+  }, error = function(e) {
+    warning("Could not set seqlevelsStyle(gtf_gr) to UCSC: ", e$message)
+  })
+  
+  ## Extract genes
+  genes <- gtf_gr[gtf_gr$type == "gene"]
+  
+  # ensure gene_name / gene_id columns exist and match length(genes)
+  if (!"gene_id"   %in% names(mcols(genes))) mcols(genes)$gene_id   <- NA_character_
+  if (!"gene_name" %in% names(mcols(genes))) mcols(genes)$gene_name <- NA_character_
+  
+  ## Build a TSS GRanges
+  tss_pos <- ifelse(strand(genes) == "+", start(genes), end(genes))
+  tss_gr  <- GRanges(
+    seqnames   = seqnames(genes),
+    ranges     = IRanges(start = tss_pos, end = tss_pos),
+    strand     = strand(genes),
+    gene_name  = mcols(genes)$gene_name,
+    gene_id    = mcols(genes)$gene_id
+  )
+  
+  ## Restrict to seqlevels shared between peaks & TSS
+  common <- intersect(seqlevels(peaks), seqlevels(tss_gr))
+  peaks  <- keepSeqlevels(peaks,  common, pruning.mode = "coarse")
+  tss_gr <- keepSeqlevels(tss_gr, common, pruning.mode = "coarse")
+  
+  ## Find the single nearest TSS per peak
+  d2n <- distanceToNearest(peaks, tss_gr, ignore.strand = TRUE)
+  qh  <- queryHits(d2n)
+  sh  <- subjectHits(d2n)
+  dd  <- mcols(d2n)$distance
+  
+  ## Prepare result vectors
+  n       <- length(peaks)
+  distV   <- integer(n)
+  geneV   <- character(n)
+  assocV  <- character(n)
+  
+  ## Fill them in
+  distV[qh] <- dd
+  # pick gene_name if non-NA/non-empty, else gene_id
+  raw_gn <- mcols(tss_gr)$gene_name[sh]
+  raw_gi <- mcols(tss_gr)$gene_id[sh]
+  geneV[qh] <- ifelse(!is.na(raw_gn) & raw_gn != "", raw_gn, raw_gi)
+  
+  assocV[qh] <- ifelse(
+    dd == 0, "overlap",
+    ifelse(dd <= flank_threshold, "flank", "none")
+  )
+  
+  ## Attach metadata columns and return
+  mcols(peaks)$closest_tss_id          <- geneV
+  mcols(peaks)$closest_distance_to_tss <- distV
+  mcols(peaks)$association_type        <- assocV
+  
+  peaks
+}
+```
+
+# Associate peaks to genes/TSS usage
+```{r}
+library(GenomicRanges)
+
+peak_files <- list(
+  Macaca      = "/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_rhe10_coords.bed",
+  Marmoset    = "/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_caljac1.2_coords.bed",
+  PanTro3     = "/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_PanTro3_coords.bed"
+)
+
+gtf_files <- list(
+  Macaca      = "/work/vstorozhuk/data/reference/Mmul_10_standardized.gtf",
+  Marmoset    = "/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf",
+  PanTro3     = "/work/vstorozhuk/data/reference/mPanTro3_standardized.gtf"
+)
+
+# Loop, annotate, extract and merge
+df_list <- mapply(function(id, bed_path, gtf_path) {
+  peaks <- import(bed_path, format="BED")
+  gtf    <- readGFF(gtf_path)
+  
+  ann_peaks <- annotateNearestTSS(gtf=gtf, peaks=peaks, flank_threshold=500)
+  
+  data.frame(
+    seqnames = as.character(seqnames(ann_peaks)),
+    start    = start(ann_peaks),
+    end      = end(ann_peaks),
+    strand   = as.character(strand(ann_peaks)),
+    identity = id,
+    closest_tss_id          = mcols(ann_peaks)$closest_tss_id,
+    closest_distance_to_tss = mcols(ann_peaks)$closest_distance_to_tss,
+    association_type        = mcols(ann_peaks)$association_type,
+    stringsAsFactors = FALSE
+  )
+}, 
+id       = names(peak_files),
+bed_path = peak_files,
+gtf_path = gtf_files,
+SIMPLIFY = FALSE)
+
+combined_df <- do.call(rbind, df_list)
+
+
+write.csv(combined_df, "/work/vstorozhuk/data/CAGE/associated_peaks_3species.csv")
+
+```
+
+# Peak–TSS Association Counts by Species
+```{r}
+df_summary <- combined_df %>%
+  group_by(identity, association_type) %>%
+  summarise(count = n(), .groups="drop") %>%
+  # also compute per-species proportions
+  group_by(identity) %>%
+  mutate(prop = count / sum(count)) %>%
+  ungroup()
+
+
+ggplot(df_summary, aes(x = identity, y = count, fill = association_type)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  labs(
+    x     = "Species",
+    y     = "Number of Peaks",
+    fill  = "Association Type"
+  ) +
+  theme_minimal()
+
+```
+
+Distribution of Peak–TSS Distances by Species
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+combined_df$closest_distance_to_tss <- as.numeric(combined_df$closest_distance_to_tss)
+
+ggplot(combined_df, aes(x = identity, y = closest_distance_to_tss + 1, fill = identity)) +
+  geom_violin(trim = TRUE, alpha = 0.6) +
+  geom_boxplot(width = 0.1, outlier.size = 0.3, fill = "white") +
+  scale_y_log10(labels = comma_format()) +
+  labs(
+    x     = "Species",
+    y     = "Distance to Nearest TSS (bp, log₁₀ scale)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+ggplot(combined_df, aes(x = closest_distance_to_tss + 1, color = identity)) +
+  geom_freqpoly(binwidth = 0.1, position = "identity") +
+  scale_x_log10(
+    labels = comma_format(), 
+    breaks = c(1, 10, 100, 1e3, 1e4, 1e5)
+  ) +
+  labs(
+    x     = "Distance to Nearest TSS (bp, log₁₀ scale)",
+    y     = "Count",
+    color = "Species"
+  ) +
+  theme_minimal()
+```
+
+
+#Peaks per gene
+```{r}
+library(dplyr)
+library(ggplot2)
+
+peak_counts <- combined_df %>%
+  group_by(identity, association_type, closest_tss_id) %>%
+  summarise(num_peaks = n(), .groups = "drop")
+
+peak_stats <- peak_counts %>%
+  group_by(identity, association_type) %>%
+  summarise(
+    mean_peaks   = mean(num_peaks),
+    median_peaks = median(num_peaks),
+    sd_peaks     = sd(num_peaks),
+    n_genes      = n(),
+    .groups      = "drop"
+  ) %>%
+  mutate(
+    identity = factor(identity, 
+                      levels = c("Macaca","PanTro3","Marmoset")),
+    association_type = factor(association_type, 
+                              levels = c("overlap","flank","none"))
+  )
+
+ggplot(peak_stats,
+       aes(x = identity, y = mean_peaks, fill = association_type)) +
+  geom_col(position = position_dodge(0.8), width = 0.6) +
+  geom_errorbar(
+    aes(ymin = pmax(mean_peaks - sd_peaks, 0),
+        ymax = mean_peaks + sd_peaks),
+    position = position_dodge(0.8),
+    width    = 0.2
+  ) +
+  scale_y_continuous(
+    breaks = 1:8      
+  ) +
+  coord_cartesian(
+    ylim = c(0, 8)    
+  ) +
+  labs(
+    x    = "Species",
+    y    = "Average peaks per gene",
+    fill = "Assoc. type",
+    title= "Mean CAGE-peak count per gene (±SD)"
+  ) +
+  theme_minimal()
+
+```
+

@@ -1,0 +1,144 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-07-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/work/vstorozhuk/export_to_git/CAGE")
+```
+
+
+# Get public chains for liftover
+```{bash}
+cd /work/vstorozhuk/export_to_git/CAGE
+
+# CAGE peaks in rhemac 8
+wget https://fantom.gsc.riken.jp/5/datafiles/latest/extra/CAGE_peaks/rheMac8.cage_peak_coord.bed.gz
+wget https://fantom.gsc.riken.jp/5/datafiles/latest/extra/CAGE_peaks/rheMac8.cage_peak_ann.txt.gz
+
+# chain RheMAc 8 to 10
+wget https://hgdownload.soe.ucsc.edu/goldenPath/rheMac8/liftOver/rheMac8ToRheMac10.over.chain.gz
+
+# rhe 10 to marmoset 4
+wget https://hgdownload.soe.ucsc.edu/goldenPath/rheMac10/liftOver/rheMac10ToCalJac4.over.chain.gz
+
+# rhe 10 to pantro 6
+wget https://hgdownload.soe.ucsc.edu/goldenPath/rheMac10/liftOver/rheMac10ToPanTro6.over.chain.gz
+
+# caljac4 to rhemac10
+wget https://hgdownload.soe.ucsc.edu/goldenPath/calJac4/liftOver/calJac4ToRheMac10.over.chain.gz
+
+# pantro6 to rhemac10
+wget https://hgdownload.soe.ucsc.edu/goldenPath/panTro6/liftOver/panTro6ToRheMac10.over.chain.gz
+
+# custom chains are deposited on google drive 
+```
+
+
+# Liftover CAGE
+
+## RheMac8 to CalJac 1.2
+
+  RheMac8 -> RheMac10 *-> CalJac4 -> CalJac1.2
+  *-> reciprocal lift over, where I keep only peaks which can map back (from CalJac4 to RheMac10) 
+  
+```{r}
+library(rtracklayer)
+library(dplyr)
+
+## original CAGE peaks on rheMac8
+cage_peaks_rhe8 <- import("rheMac8.cage_peak_coord.bed", format = "bed")
+
+## Add metadata: unique ID and original peak width
+mcols(cage_peaks_rhe8)$id         <- seq_along(cage_peaks_rhe8)
+mcols(cage_peaks_rhe8)$orig_width <- width(cage_peaks_rhe8)
+
+## Lift rheMac8 → rheMac10, keep only peaks with exactly one mapping
+chain_8_to_10    <- import.chain("rheMac8ToRheMac10.over.chain")
+lift10_list      <- liftOver(cage_peaks_rhe8, chain_8_to_10)
+is_unique10      <- elementNROWS(lift10_list) == 1
+lifted_unique_rhe10 <- unlist(lift10_list[is_unique10])
+
+## Lift rheMac10 → CalJac4, again keeping only unique mappings
+chain_10_to_4    <- import.chain("rheMac10ToCalJac4.over.chain")
+lift4_list       <- liftOver(lifted_unique_rhe10, chain_10_to_4)
+is_unique4       <- elementNROWS(lift4_list) == 1
+lifted_unique_calJac4 <- unlist(lift4_list[is_unique4])
+
+# carry metadata forward
+mcols(lifted_unique_calJac4) <- mcols(lifted_unique_rhe10)[is_unique4,]
+
+## Reciprocal lift: CalJac4 → rheMac10, keep only exact back‐mappings
+chain_4_to_10    <- import.chain("/calJac4ToRheMac10.over.chain")
+recip_list       <- liftOver(lifted_unique_calJac4, chain_4_to_10)
+is_unique_back   <- elementNROWS(recip_list) == 1
+recip_peaks      <- lifted_unique_calJac4[is_unique_back]
+
+## Build and export final .bed with cols: seqnames, start, end, id, orig_width
+final_df <- as.data.frame(recip_peaks) %>% dplyr::select(seqnames, start, end, width, score, strand, id, orig_width)
+
+rtracklayer::export(final_df, con = "rheMac8_cage_peaks_in_CalJac4_recip.bed",format = "BED")
+```
+
+```{bash}
+# Lift CalJac4 → CalJac1.2 with custom chain
+conda activate flo_env
+liftOver rheMac8_cage_peaks_in_CalJac4_recip.bed \
+  calJac4_TO_mCalJa1.2.pat.X.liftover.chn \
+  rheMac8_cage_peaks_in_caljac1.2_coords.bed \
+  rheMac8_cage_peaks_in_caljac1.2_coords_unmapped.bed
+
+```
+
+## RheMac8 to mPanTro3
+
+  RheMac8 -> RheMac10 *-> PanTro6 -> mPanTro3
+  *-> reciprocal lift over, where I keep only peaks which can map back (from PanTro6 to RheMac10) 
+
+```{r}
+library(rtracklayer)
+library(dplyr)
+
+##  Load original CAGE peaks on rheMac8
+cage_peaks_rhe8 <- import("rheMac8.cage_peak_coord.bed",format = "bed")
+mcols(cage_peaks_rhe8)$id <- seq_along(cage_peaks_rhe8)
+mcols(cage_peaks_rhe8)$orig_width <- width(cage_peaks_rhe8)
+
+## Lift rheMac8 → rheMac10, keep only unique mappings
+chain_8_to_10    <- import.chain("rheMac8ToRheMac10.over.chain")
+lift10_list      <- liftOver(cage_peaks_rhe8, chain_8_to_10)
+is_unique10      <- elementNROWS(lift10_list) == 1
+lifted_unique_rhe10 <- unlist(lift10_list[is_unique10])
+
+## Lift rheMac10 → PanTro6, keep only unique mappings
+chain_rhe10_to_pan6 <- import.chain("rheMac10ToPanTro6.over.chain")
+lift_pan6_list      <- liftOver(lifted_unique_rhe10, chain_rhe10_to_pan6)
+is_unique_pan6      <- elementNROWS(lift_pan6_list) == 1
+lifted_unique_pan6  <- unlist(lift_pan6_list[is_unique_pan6])
+
+# carry metadata forward
+mcols(lifted_unique_pan6) <- mcols(lifted_unique_rhe10)[is_unique_pan6,]
+
+## Reciprocal liftover: PanTro6 → rheMac10, keep only exact back‐mappings
+chain_pan6_to_10 <- import.chain("panTro6ToRheMac10.over.chain")
+recip_list       <- liftOver(lifted_unique_pan6, chain_pan6_to_10)
+is_unique_back   <- elementNROWS(recip_list) == 1
+recip_peaks      <- lifted_unique_pan6[is_unique_back]
+
+# export reciprocal‐filtered BED
+final_df <- as.data.frame(recip_peaks) %>% dplyr::select(seqnames, start, end, width, score, strand, id, orig_width)
+rtracklayer::export(final_df, con = "rheMac8_cage_peaks_in_PanTro6_recip.bed", format = "BED")
+
+```
+
+```{bash}
+# Lift PanTro6 → mPanTro3 with custom chain
+conda activate flo_env
+liftOver \
+  rheMac8_cage_peaks_in_PanTro6_recip.bed \
+  panTro6_TO_mPanTro3.v2.0.liftover.chn \
+  rheMac8_cage_peaks_in_PanTro3_coords.bed \
+  rheMac8_cage_peaks_in_PanTro3_coords_unmapped.bed
+
+```

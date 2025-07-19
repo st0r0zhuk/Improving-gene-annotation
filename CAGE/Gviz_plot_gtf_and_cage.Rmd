@@ -1,0 +1,228 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-07-18"
+---
+
+
+### plot for macaca
+```{r}
+
+
+library(GenomicRanges)
+library(Gviz)
+library(IRanges)
+library(GenomicRanges)
+library(Gviz)
+library(IRanges)
+
+
+gtf_macaca <-  rtracklayer::readGFF("/work/vstorozhuk/data/reference/Mmul_10_standardized.gtf")
+lifted_unique_rhe10_gr <- import("/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_rhe10_coords.bed", format = "BED")
+
+
+
+# Filter exon features and keep relevant columns
+gtf_exons_macaca <- gtf_macaca[gtf_macaca$type == "exon" & !is.na(gtf_macaca$gene_name), ]
+
+
+plot_gene_with_cage <- function(gene_name, cage_peaks, genome = "rheMac10") {
+  # Convert gtf_exons to GRanges if it's not already
+  if (!inherits(gtf_exons_macaca, "GRanges")) {
+    gtf_gr <- GRanges(
+      seqnames    = gtf_exons_macaca$seqid,
+      ranges      = IRanges(start = gtf_exons_macaca$start, end = gtf_exons_macaca$end),
+      strand      = gtf_exons_macaca$strand,
+      gene        = gtf_exons_macaca$gene_name,
+      transcript  = gtf_exons_macaca$transcript_id
+    )
+  } else {
+    gtf_gr <- gtf_exons_macaca
+  }
+
+  # Style
+  seqlevelsStyle(gtf_gr)     <- "UCSC"
+  seqlevelsStyle(cage_peaks) <- "UCSC"
+
+  # Subset the selected gene
+  gene_gr <- gtf_gr[gtf_gr$gene == gene_name]
+  if (length(gene_gr) == 0) {
+    message("No such gene found in the GTF: ", gene_name)
+    return(NULL)
+  }
+
+  # Define ±25kb plot range
+  gene_range <- range(gene_gr)
+  plot_range <- IRanges(start = start(gene_range) - 25000,
+                        end   = end(gene_range) + 25000)
+  chr <- as.character(seqnames(gene_gr)[1])
+
+  # Get all transcripts in range
+  region_gr <- GRanges(seqnames = chr, ranges = plot_range)
+  gtf_sub   <- subsetByOverlaps(gtf_gr, region_gr)
+
+  # Highlight target gene
+  gtf_sub$highlight <- ifelse(gtf_sub$gene == gene_name, "target", "other")
+
+  # Gene track
+  gene_track <- GeneRegionTrack(
+    gtf_sub,
+    genome     = genome,
+    chromosome = chr,
+    name       = "Genes",
+    transcriptAnnotation = "gene",
+    showId     = TRUE,
+    background.title = "lightblue",
+    col        = ifelse(gtf_sub$highlight == "target", "orange", "gray80"),
+    fill       = ifelse(gtf_sub$highlight == "target", "orange", "gray80")
+  )
+
+  # Subset CAGE peaks in view
+  peaks_sub <- subsetByOverlaps(cage_peaks, region_gr)
+
+  # CAGE peak track
+  peak_track <- AnnotationTrack(
+    peaks_sub,
+    genome     = genome,
+    chromosome = chr,
+    name       = "CAGE Peaks",
+    shape      = "box",
+    fill       = "red",
+    stacking   = "dense",
+    background.title = "pink"
+  )
+
+  # HighlightTrack for yellow rectangles at CAGE peaks
+  highlight_track <- HighlightTrack(
+    trackList = list(gene_track),
+    start     = start(peaks_sub) - 100,
+    end       = end(peaks_sub) + 100,
+    chromosome = chr,
+    col       = NA,
+    fill      = "yellow"
+  )
+
+  # Plot all tracks with highlight
+  plotTracks(
+    list(highlight_track, peak_track),
+    from       = start(plot_range),
+    to         = end(plot_range),
+    chromosome = chr
+  )
+}
+
+# Required to avoid UCSC-style "chr" naming warnings
+options(ucscChromosomeNames = FALSE)
+
+# lifted_unique must be a GRanges object of lifted CAGE peaks
+plot_gene_with_cage("NFIA", lifted_unique_rhe10_gr)
+
+# exlcude genes with 20+ TSS low complexity domains?
+
+```
+
+### plot for caljac
+```{r}
+
+gtf <-  rtracklayer::readGFF("/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf")
+rheMac8_cage_peaks_in_caljac1.2_coords <- import("/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_caljac1.2_coords.bed")
+
+# Filter exon features and keep relevant columns
+gtf_exons <- gtf[gtf$type == "exon" & !is.na(gtf$gene), ]
+
+library(GenomicRanges)
+library(Gviz)
+library(IRanges)
+library(GenomicRanges)
+library(Gviz)
+library(IRanges)
+library(GenomicRanges)
+library(Gviz)
+library(IRanges)
+library(rtracklayer)
+
+
+plot_gene_with_cage_marmoset <- function(gene_name, cage_peaks, genome = "mCalJac1.2") {
+  # Convert gtf_exons to GRanges
+  gtf_gr <- GRanges(
+    seqnames   = gtf_exons$seqid,
+    ranges     = IRanges(start = gtf_exons$start, end = gtf_exons$end),
+    strand     = gtf_exons$strand,
+    gene       = gtf_exons$gene,
+    transcript = gtf_exons$transcript_id
+  )
+
+  # Subset the selected gene
+  gene_gr <- gtf_gr[gtf_gr$gene == gene_name]
+  if (length(gene_gr) == 0) {
+    message("No such gene found in the GTF: ", gene_name)
+    return(NULL)
+  }
+
+  # Define ±25kb plot range
+  gene_range <- range(gene_gr)
+  plot_range <- IRanges(start = start(gene_range) - 25000,
+                        end   = end(gene_range) + 25000)
+  chr <- as.character(seqnames(gene_gr)[1])
+
+  # Get all transcripts in range
+  region_gr <- GRanges(seqnames = chr, ranges = plot_range)
+  gtf_sub   <- subsetByOverlaps(gtf_gr, region_gr)
+
+  # Highlight target gene
+  gtf_sub$highlight <- ifelse(gtf_sub$gene == gene_name, "target", "other")
+
+  # Gene track
+  gene_track <- GeneRegionTrack(
+    gtf_sub,
+    genome     = genome,
+    chromosome = chr,
+    name       = "Genes",
+    transcriptAnnotation = "gene",
+    showId     = TRUE,
+    background.title = "lightblue",
+    col        = ifelse(gtf_sub$highlight == "target", "orange", "gray80"),
+    fill       = ifelse(gtf_sub$highlight == "target", "orange", "gray80")
+  )
+
+  # Subset CAGE peaks in view
+  peaks_sub <- subsetByOverlaps(cage_peaks, region_gr)
+
+  # CAGE peak track
+  peak_track <- AnnotationTrack(
+    peaks_sub,
+    genome     = genome,
+    chromosome = chr,
+    name       = "CAGE Peaks",
+    shape      = "box",
+    fill       = "red",
+    stacking   = "dense",
+    background.title = "pink"
+  )
+
+  # HighlightTrack for yellow rectangles at CAGE peaks
+  highlight_track <- HighlightTrack(
+    trackList = list(gene_track),
+    start     = start(peaks_sub) - 100,
+    end       = end(peaks_sub) + 100,
+    chromosome = chr,
+    col       = NA,
+    fill      = "yellow"
+  )
+
+  # Plot all tracks with highlight
+  plotTracks(
+    list(highlight_track, peak_track),
+    from       = start(plot_range),
+    to         = end(plot_range),
+    chromosome = chr
+  )
+}
+
+# Required to avoid UCSC-style "chr" naming warnings
+options(ucscChromosomeNames = FALSE)
+
+# Run function (lifted_unique must be a GRanges object)
+plot_gene_with_cage_marmoset("RERE", rheMac8_cage_peaks_in_caljac1.2_coords)
+
+```

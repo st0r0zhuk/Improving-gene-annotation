@@ -38,6 +38,20 @@ wget https://hgdownload.soe.ucsc.edu/goldenPath/panTro6/liftOver/panTro6ToRheMac
 
 # Liftover CAGE
 
+
+### RheMac8 to RheMac10_RefSeq 
+
+```{bash}
+# Lift CalJac4 → CalJac1.2 with custom chain
+conda activate flo_env
+liftOver rheMac8.cage_peak_coord.bed \
+  /work/vstorozhuk/data/CAGE/RheMac8_TO_RheMac10_Refseq_liftover.chn  \
+  rheMac8_cage_peaks_in_RheMac10_RefSeq_coords.bed \
+  rheMac8_cage_peaks_in_RheMac10_RefSeq_coords_unmapped.bed
+  
+```
+
+
 ## RheMac8 to CalJac 1.2
 
   RheMac8 -> RheMac10 *-> CalJac4 -> CalJac1.2

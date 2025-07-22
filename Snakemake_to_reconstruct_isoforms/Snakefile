@@ -1,0 +1,451 @@
+configfile: "config.yaml"
+
+import os
+
+# Create output directories for each sample
+for sample in config["samples"]:
+    os.makedirs(f"{config['output_dir']}/{sample}", exist_ok=True)
+
+# Convenience: store a list of all sample names
+SAMPLES = list(config["samples"].keys())
+
+def get_reference_fasta(wildcards):
+    ref_label = config["samples"][wildcards.sample]["reference"]
+    return config["references"][ref_label]["reference_fasta"]
+
+def get_reference_gtf(wildcards):
+    ref_label = config["samples"][wildcards.sample]["reference"]
+    return config["references"][ref_label]["reference_gtf"]
+
+def opt_cfg(key, sample):
+    return config.get(key, {}).get(sample, None)
+
+
+######################## ######################## ######################## ######################## 
+# FINAL OUTPUT TARGETS 
+######################## ######################## ######################## ########################
+
+rule all:
+    input:
+        expand(f"{config['output_dir']}/{{sample}}/{{sample}}_flair_sqanti_S2_report_postfilter/isoforms_classification.txt", sample=SAMPLES),
+        expand(f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_report_postfilter/isoforms_classification.txt", sample=SAMPLES)
+        
+######################## ######################## ######################## ######################## 
+# CONSENSUS CALLING 
+######################## ######################## ######################## ######################## 
+
+rule consensus_calling:
+    threads: 20
+    input:
+        fastq=lambda wc: f"{config['input_dir']}/{wc.sample}.fastq",
+        splint=config["splint"]
+    output:
+        directory(f"{config['output_dir']}/{{sample}}/{{sample}}_consensus"),
+        touch(f"{config['output_dir']}/{{sample}}/{{sample}}_consensus/done.txt"),
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_consensus",
+        c3poa_path=config["c3poa_path"]
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/c3poa_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} && \
+        python3 {params.c3poa_path}/C3POa.py \
+        -r {input.fastq} \
+        -o {params.out_dir} \
+        -s {input.splint} \
+        -n {threads} && \
+        mv {params.out_dir}* {params.out_dir}/ 2>/dev/null || true && \
+        touch {params.out_dir}/done.txt
+        """
+
+
+
+######################## ######################## ######################## ######################## 
+# POST-PROCESSING 
+######################## ######################## ######################## ######################## 
+
+
+rule postprocessing:
+    input:
+        consensus_output=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_consensus"
+    output:
+        postprocessing_done=touch(f"{config['output_dir']}/{{sample}}/{{sample}}_postprocessing/postprocessing_done.txt"),
+        processed_fasta=f"{config['output_dir']}/{{sample}}/{{sample}}_postprocessing/R2C2_full_length_consensus_reads.fasta"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing",
+        adapters=config["adapters"],
+        c3poa_path=config["c3poa_path"]
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/c3poa_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} && \
+        python3 {params.c3poa_path}/C3POa_postprocessing.py \
+        -i {input.consensus_output} \
+        -a {params.adapters} && \
+        
+        fasta_file=$(find {input.consensus_output} -name "R2C2_full_length_consensus_reads.fasta" | head -n 1) && \
+        
+        if [ -f "$fasta_file" ]; then
+            mv "$fasta_file" {output.processed_fasta}
+        else
+            echo "Error: R2C2_full_length_consensus_reads.fasta not found!" >&2
+            exit 1
+        fi && \
+        
+        touch {params.out_dir}/postprocessing_done.txt
+        """
+
+
+######################## ######################## ######################## ######################## 
+# TRIMMING 
+######################## ######################## ######################## ######################## 
+
+
+rule trimming:
+    input:
+        fasta=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing/R2C2_full_length_consensus_reads.fasta",
+        consensus_done=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing/postprocessing_done.txt"
+    output:
+        cleaned=f"{config['output_dir']}/{{sample}}/{{sample}}_trimmed/cleaned_R2C2_full_length_consensus_reads.fasta"
+    params:
+        trim=config["trim"],
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_trimmed",
+        mandalorion_path=config["mandalorion_path"]
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/mandalorion_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        python3 {params.mandalorion_path}/utils/removePolyA.py \
+            -i {input.fasta} \
+            -o {output.cleaned} \
+            -t {params.trim}
+        """
+
+
+
+######################## ######################## ######################## ######################## 
+# FLAIR MAP
+######################## ######################## ######################## ######################## 
+
+
+rule flair_map:
+    threads: 8
+    input:
+        fasta=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_trimmed/cleaned_R2C2_full_length_consensus_reads.fasta"
+    output:
+        f"{config['output_dir']}/{{sample}}/{{sample}}_flair_map/flair_output.bed"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_map",
+        reference_fasta=get_reference_fasta 
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/flair_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        flair align \
+            --threads {threads} \
+            -g {params.reference_fasta} \
+            -r {input.fasta} \
+            -o {params.out_dir}/flair_output
+        """
+
+
+######################## ######################## ######################## ######################## 
+# FLAIR CORRECT
+######################## ######################## ######################## ######################## 
+
+
+rule flair_correct:
+    threads: 8
+    input:
+        bed=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_map/flair_output.bed"
+    output:
+        corrected=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_correct/{{sample}}_all_corrected.bed",
+        inconsistent=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_correct/{{sample}}_all_inconsistent.bed"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_correct",
+        reference_fasta=get_reference_fasta,
+        reference_gtf=get_reference_gtf
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/flair_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        flair correct \
+            --threads {threads} \
+            -q {input.bed} \
+            -f {params.reference_gtf} \
+            -g {params.reference_fasta} \
+            -o {params.out_dir}/{wildcards.sample}
+        """
+
+
+######################## ######################## ######################## ######################## 
+# FLAIR COLLAPSE 
+######################## ######################## ######################## ######################## 
+
+
+rule flair_collapse:
+    threads: 8
+    input:
+        fasta=f"{config['output_dir']}/{{sample}}/{{sample}}_trimmed/cleaned_R2C2_full_length_consensus_reads.fasta",
+        corrected=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_correct/{{sample}}_all_corrected.bed"
+    output:
+        collapsed=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_collapse_S2/{{sample}}.isoforms.gtf"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_collapse_S2",
+        reference_fasta=get_reference_fasta,
+        reference_gtf=get_reference_gtf
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/flair_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        flair collapse \
+            --threads {threads} \
+            -q {input.corrected} \
+            -r {input.fasta} \
+            -g {params.reference_fasta} \
+            --gtf {params.reference_gtf} \
+            --output {params.out_dir}/{wildcards.sample} \
+            --support 2 \
+            --stringent --check_splice --generate_map --annotation_reliant generate
+        """
+        
+        
+  
+
+######################## ######################## ######################## ######################## 
+# SQANTI3 REPORT (FLAIR S2)
+######################## ######################## ######################## ######################## 
+
+
+rule sqanti3_report_flair:
+    input:
+        collapsed=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_collapse_S2/{{sample}}.isoforms.gtf"
+    output:
+        f"{config['output_dir']}/{{sample}}/{{sample}}_flair_S2_sqanti_report/isoforms_SQANTI3_report.html",
+        f"{config['output_dir']}/{{sample}}/{{sample}}_flair_S2_sqanti_report/isoforms_classification.txt"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_S2_sqanti_report",
+        sqanti3_path=config["sqanti3_path"],
+        reference_fasta=get_reference_fasta,
+        reference_gtf=get_reference_gtf
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        {params.sqanti3_path}/sqanti3_qc.py \
+            --isoforms {input.collapsed} \
+            --refGTF {params.reference_gtf} \
+            --refFasta {params.reference_fasta} \
+            --force_id_ignore \
+            --report html \
+            --dir {params.out_dir}
+        """
+
+
+
+######################## ######################## ######################## ######################## 
+# SQANTI3 FILTER
+######################## ######################## ######################## ######################## 
+
+
+rule sqanti3_filter_flair:
+    input:
+        classification=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_S2_sqanti_report/isoforms_classification.txt",
+        gtf=f"{config['output_dir']}/{{sample}}/{{sample}}_flair_collapse_S2/{{sample}}.isoforms.gtf"
+    output:
+        f"{config['output_dir']}/{{sample}}/{{sample}}_flair_S2_sqanti_filter/isoforms.filtered.gtf"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_S2_sqanti_filter",
+        sqanti3_path=config["sqanti3_path"]
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        python {params.sqanti3_path}/sqanti3_filter.py rules \
+        --sqanti_class {input.classification} \
+        --filter_gtf {input.gtf} \
+        -d {params.out_dir} \
+        --skip_report
+        """
+
+
+
+######################## ######################## ######################## ######################## 
+# MANDALORION 
+######################## ######################## ######################## ######################## 
+
+
+rule mandalorion:
+    input:
+        fasta=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_trimmed/cleaned_R2C2_full_length_consensus_reads.fasta"
+    output:
+        collapsed=f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2/Isoforms.filtered.clean.gtf"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_mandalorion_R2",
+        mandalorion_path=config["mandalorion_path"],
+        reference_gtf=get_reference_gtf,
+        reference_fasta=get_reference_fasta
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/mandalorion_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        python3 {params.mandalorion_path}/Mando.py \
+            -p {params.out_dir} \
+            -g {params.reference_gtf} \
+            -G {params.reference_fasta} \
+            -f {input.fasta} \
+            -R 2
+        """
+
+
+
+######################## ######################## ######################## ######################## 
+# SQANTI3 REPORT 
+######################## ######################## ######################## ######################## 
+
+
+rule sqanti3_report_mandalorion:
+    input:
+        collapsed=f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2/Isoforms.filtered.clean.gtf"
+    output:
+        f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_report/isoforms_SQANTI3_report.html",
+        f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_report/isoforms_classification.txt"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_mandalorion_R2_sqanti_report",
+        sqanti3_path=config["sqanti3_path"],
+        reference_fasta=get_reference_fasta,
+        reference_gtf=get_reference_gtf
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        {params.sqanti3_path}/sqanti3_qc.py \
+            --isoforms {input.collapsed} \
+            --refGTF {params.reference_gtf} \
+            --refFasta {params.reference_fasta} \
+            --force_id_ignore \
+            --report html \
+            --dir {params.out_dir}
+        """
+       
+        
+######################## ######################## ######################## ######################## 
+# SQANTI3 FILTER 
+######################## ######################## ######################## ######################## 
+
+
+rule sqanti3_filter_mandalorion:
+    input:
+        classification=f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_report/isoforms_classification.txt",
+        gtf=f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2/Isoforms.filtered.clean.gtf"
+    output:
+        f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_filter/isoforms.filtered.gtf"
+    params:
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_mandalorion_R2_sqanti_filter",
+        sqanti3_path=config["sqanti3_path"]
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} &&
+        python {params.sqanti3_path}/sqanti3_filter.py rules \
+        --sqanti_class {input.classification} \
+        --filter_gtf {input.gtf} \
+        -d {params.out_dir} \
+        --skip_report
+        """
+        
+
+    
+
+######################## ######################## ######################## ######################## 
+# SQANTI3 REPORT POSTFILTER MANDALORION 
+######################## ######################## ######################## ######################## 
+
+rule sqanti3_report_postfilter_mandalorion:
+    input:
+        collapsed = f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_filter/isoforms.filtered.gtf",
+    output:
+        html           = f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_report_postfilter/isoforms_SQANTI3_report.html",
+        classification = f"{config['output_dir']}/{{sample}}/{{sample}}_mandalorion_R2_sqanti_report_postfilter/isoforms_classification.txt",
+    params:
+        out_dir          = lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_mandalorion_R2_sqanti_report_postfilter",
+        sqanti3_path     = config["sqanti3_path"],
+        reference_fasta  = get_reference_fasta,
+        reference_gtf    = get_reference_gtf,
+        # look up config directly, build flags or empty
+        short_reads_arg = lambda wc: (
+            f"--short_reads {opt_cfg('rna_fofn', wc.sample)}"
+            if opt_cfg('rna_fofn', wc.sample) else ""
+        ),
+        cage_peaks_arg  = lambda wc: (
+            f"--CAGE_peak {opt_cfg('cage_peaks', wc.sample)}"
+            if opt_cfg('cage_peaks', wc.sample) else ""
+        ),
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+    shell:
+        r"""
+        mkdir -p {params.out_dir} && \
+        {params.sqanti3_path}/sqanti3_qc.py \
+            --isoforms {input.collapsed} \
+            --refGTF {params.reference_gtf} \
+            --refFasta {params.reference_fasta} \
+            {params.short_reads_arg} \
+            {params.cage_peaks_arg} \
+            --force_id_ignore \
+            --report html \
+            -t 20 \
+            --dir {params.out_dir}
+        """
+
+
+######################## ######################## ######################## ######################## 
+# SQANTI3 REPORT POSTFILTER FLAIR
+######################## ######################## ######################## ######################## 
+
+rule sqanti3_report_postfilter_flair:
+    input:
+        collapsed = f"{config['output_dir']}/{{sample}}/{{sample}}_flair_S2_sqanti_filter/isoforms.filtered.gtf",
+    output:
+        html           = f"{config['output_dir']}/{{sample}}/{{sample}}_flair_sqanti_S2_report_postfilter/isoforms_SQANTI3_report.html",
+        classification = f"{config['output_dir']}/{{sample}}/{{sample}}_flair_sqanti_S2_report_postfilter/isoforms_classification.txt",
+    params:
+        out_dir          = lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_sqanti_S2_report_postfilter",
+        sqanti3_path     = config["sqanti3_path"],
+        reference_fasta  = get_reference_fasta,
+        reference_gtf    = get_reference_gtf,
+        # optional flags just like in the Mandalorion rule
+        short_reads_arg  = lambda wc: (
+            f"--short_reads {opt_cfg('rna_fofn', wc.sample)}"
+            if opt_cfg('rna_fofn', wc.sample) else ""
+        ),
+        cage_peaks_arg   = lambda wc: (
+            f"--CAGE_peak {opt_cfg('cage_peaks', wc.sample)}"
+            if opt_cfg('cage_peaks', wc.sample) else ""
+        ),
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+    shell:
+        r"""
+        mkdir -p {params.out_dir} && \
+        {params.sqanti3_path}/sqanti3_qc.py \
+            --isoforms {input.collapsed} \
+            --refGTF {params.reference_gtf} \
+            --refFasta {params.reference_fasta} \
+            {params.short_reads_arg} \
+            {params.cage_peaks_arg} \
+            --force_id_ignore \
+            --report html \
+            --dir {params.out_dir}
+        """

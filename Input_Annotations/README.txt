@@ -1,2 +1,2 @@
-The folder contains script and necessary yamls to fecth and standardize gft files used in the isoform discovery pipeline.
+The folder contains script and necessary yamls to fetch and standardize gft files used in the isoform discovery pipeline.
 Without running agat_convert_sp_gff2gtf.pl the non-human gtfs will not be tolerated by FLAIR and/or Sqanti3 tools. 

@@ -1,0 +1,8 @@
+name: ncbi_datasets
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - ca-certificates=2025.7.14
+  - ncbi-datasets-cli=17.0.0
+prefix: /home/vstorozhuk/.conda/envs/ncbi_datasets

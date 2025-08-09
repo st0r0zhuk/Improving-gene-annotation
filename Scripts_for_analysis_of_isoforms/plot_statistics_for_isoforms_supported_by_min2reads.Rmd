@@ -1,0 +1,542 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-07-19"
+---
+
+
+  
+  
+  
+
+# Read sqanti3 classifications postfilter, add isoform quantification from the respective pipeline, merge
+```{r}
+library(dplyr)
+library(magrittr)
+library(tidyr)
+
+########################################################################
+########################################################################
+
+# Define a function to read classifications, add species name, add counts from quant output, and rbind to a single table
+process_barcode <- function(barcode_id, species_name) {
+  base_dir      <- "/work/vstorozhuk/data/iso_pipeline/pipeline_outputs"
+  sqanti_path   <- file.path(base_dir, barcode_id,
+                              paste0(barcode_id, "_flair_sqanti_S2_report_postfilter"),
+                              "isoforms_classification.txt")
+  counts_path   <- file.path(base_dir, barcode_id,
+                              paste0(barcode_id, "_flair_collapse_S2"),
+                              paste0(barcode_id, ".annotated_transcripts.alignment.counts"))
+  
+  # Read isoform classification
+  tbl <- read.delim(sqanti_path) %>%
+    mutate(Species = species_name)
+  
+  # Read FLAIR counts
+  tbl_q <- read.delim(counts_path, header = FALSE)
+  colnames(tbl_q)[1:2] <- c("Isoform", "Isoform_N_reads")
+  
+  # Split off Gene suffixto get isoform id
+  tbl_q %<>%
+    separate(Isoform,
+             into = c("Isoform", "Gene"),
+             sep   = "_(?=[^_]+$)") %>%
+    dplyr::select(-Gene)
+  
+  # Join counts onto classification
+  tbl %<>%
+    left_join(tbl_q, by = c("isoform" = "Isoform"))
+  
+  return(tbl)
+}
+samples <- list(
+  list(id = "Barcode01", species = "Homo sapiens"),
+  list(id = "Barcode02", species = "Pan troglodytes"),
+  list(id = "Barcode03", species = "Macaca mulatta"),
+  list(id = "Barcode04", species = "Callithrix jacchus")
+)
+
+flair_isoforms <- lapply(samples,
+                       function(s) process_barcode(s$id, s$species)) %>%
+                bind_rows()
+flair_isoforms %<>% mutate(pipeline = "FLAIR")
+
+########################################################################
+########################################################################
+
+# Function to read classification, add species, add quant, return annotated table
+process_mandalorion <- function(barcode_id, species_name) {
+  base_dir <- "/work/vstorozhuk/data/iso_pipeline/pipeline_outputs"
+  
+  # Read isoform classification
+  class_path <- file.path(base_dir, barcode_id,
+                          paste0(barcode_id, "_mandalorion_R2_sqanti_report_postfilter"),
+                          "isoforms_classification.txt")
+  tbl <- read.delim(class_path) %>%
+    mutate(Species = species_name)
+  
+  # Read mandalorion quant file
+  quant_path <- file.path(base_dir, barcode_id,
+                          paste0(barcode_id, "_mandalorion_R2"),
+                          "Isoforms.filtered.clean.quant")
+  tbl_q <- read.delim(quant_path)
+  
+  # Drop unwanted cols and rename the long isoform-quant column
+  iso_col <- grep("^X\\.", names(tbl_q), value = TRUE)
+  tbl_q %<>%
+    dplyr::select(-X, -Gene) %>%
+    rename(Isoform_N_reads = all_of(iso_col))
+  
+  # Join quant onto classification
+  tbl %<>% left_join(tbl_q, by = c("isoform" = "Isoform"))
+  
+  return(tbl)
+}
+
+# Define your samples
+samples <- list(
+  list(id = "Barcode01", species = "Homo sapiens"),
+  list(id = "Barcode02", species = "Pan troglodytes"),
+  list(id = "Barcode03", species = "Macaca mulatta"),
+  list(id = "Barcode04", species = "Callithrix jacchus")
+)
+
+# Process all and combine
+mandalorion_isoforms <- lapply(samples, function(s) {
+  process_mandalorion(s$id, s$species)
+}) %>% bind_rows()
+
+mandalorion_isoforms %<>% mutate(pipeline = "MANDALORION")
+
+########################################################################
+########################################################################
+
+# merge 
+all_isoforms <- rbind(mandalorion_isoforms, flair_isoforms)
+all_isoforms %<>% filter(coding == "coding", RTS_stage != TRUE, predicted_NMD != TRUE)
+write.csv(all_isoforms, "/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_support2.txt")
+
+```
+
+
+# Can ISM be major/dominant? - Yes
+Do they better overlap cage
+
+```{r}
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_support2.txt")
+
+all_tables <- all_tables %>%
+  group_by(Species, pipeline, associated_gene) %>%
+  mutate(
+    max_reads = suppressWarnings(max(Isoform_N_reads, na.rm = TRUE)),
+    Dominant = ifelse(
+      is.infinite(max_reads),
+      FALSE,
+      Isoform_N_reads == max_reads
+    )
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-max_reads)
+
+
+#test <- all_tables %>% dplyr::select(associated_gene, pipeline, Species,Isoform_N_reads, Dominant,isoform )
+
+# Summarise counts of Dominant isoforms by structural_category, for each Species × pipeline
+dominant_summary <- all_tables %>%
+  filter(Dominant) %>%
+  count(Species, pipeline, structural_category, name = "n")
+
+# Plot as bar chart with count labels on top, faceted by Species (rows) and pipeline (columns)
+ggplot(dominant_summary, aes(x = structural_category, y = n, fill = structural_category)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = n), 
+            vjust = -0.5, 
+            size = 3) +
+  facet_grid(Species ~ pipeline, scales = "free_y", switch = "y") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    x = "Structural Category",
+    y = "Number of Dominant Isoforms",
+    title = "What categories do the dominant isoforms belong to",
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.placement = "outside",
+    panel.spacing = unit(0.5, "lines")
+  )
+
+
+#########
+library(dplyr)
+library(ggplot2)
+
+# Summarise counts of Dominant isoforms by subcategory, for each Species × pipeline
+dominant_subcat_summary <- all_tables %>%
+  filter(Dominant) %>%
+  count(Species, pipeline, subcategory, name = "n")
+
+# Plot as bar chart with count labels on top, faceted by Species (rows) and pipeline (columns)
+ggplot(dominant_subcat_summary, aes(x = subcategory, y = n, fill = subcategory)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = n), 
+            vjust = -0.5, 
+            size = 3) +
+  facet_grid(Species ~ pipeline, scales = "free_y", switch = "y") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    x = "Subcategory",
+    y = "Number of Dominant Isoforms",
+    title = "Distribution of Subcategories Among Dominant Isoforms"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.placement = "outside",
+    panel.spacing = unit(0.5, "lines")
+  )
+
+```
+
+# Dominant and overlap CAGE peaks ?
+
+```{r}
+
+```
+
+
+# FLAIR categories mapped to Mandalorion for Lvl2 Support
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggalluvial)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggalluvial)
+library(ggplot2)
+
+
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all.txt")
+df_clean <- all_tables %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    threshold_num  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    threshold_num  = factor(threshold_num, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  select(-barcode_clean) 
+df_clean %<>% filter(coding == "coding")
+
+
+#––– 1) Summarise per gene × pipeline × category
+gene_summary <- df_clean %>%
+  filter(pipeline %in% c("flair", "mandalorion")) %>%
+  dplyr::count(
+    species,
+    threshold_num,
+    associated_gene,
+    pipeline,
+    structural_category,
+    name = "n_isoforms"
+  ) %>%
+  group_by(species, threshold_num, associated_gene, pipeline) %>%
+  slice_max(n_isoforms, with_ties = FALSE) %>%
+  ungroup()
+
+#––– 2) Pivot wide & recode to SQANTI3‐style 3-letter codes
+gene_wide <- gene_summary %>%
+  select(-n_isoforms) %>%
+  pivot_wider(
+    id_cols     = c(species, threshold_num, associated_gene),
+    names_from  = pipeline,
+    values_from = structural_category,
+    values_fill = list(structural_category = "None")
+  ) %>%
+  rename(
+    cat_flair       = flair,
+    cat_mandalorion = mandalorion
+  ) %>%
+  mutate(
+    cat_flair = recode(cat_flair,
+      "full-splice_match"       = "FSM",
+      "incomplete-splice_match" = "ISM",
+      "novel_in_catalog"        = "NIC",
+      "novel_not_in_catalog"    = "NNC",
+      "fusion"                  = "FUS",
+      "antisense"               = "ANT",
+      "genic"                   = "GEN",
+      "genic_intron"            = "GIN",
+      "intergenic"              = "INT",
+      "None"                    = "None"
+    ),
+    cat_mandalorion = recode(cat_mandalorion,
+      "full-splice_match"       = "FSM",
+      "incomplete-splice_match" = "ISM",
+      "novel_in_catalog"        = "NIC",
+      "novel_not_in_catalog"    = "NNC",
+      "fusion"                  = "FUS",
+      "antisense"               = "ANT",
+      "genic"                   = "GEN",
+      "genic_intron"            = "GIN",
+      "intergenic"              = "INT",
+      "None"                    = "None"
+    )
+  )
+
+#––– 3) Count the gene‐level flows
+gene_flows <- gene_wide %>%
+  dplyr::count(species, threshold_num, cat_flair, cat_mandalorion)
+
+#––– 4) Plot with no axis‐side labels
+category_mapping <- gene_flows %>%
+  filter(threshold_num == 2) %>%
+  ggplot(aes(
+    axis1 = cat_flair,
+    axis2 = cat_mandalorion,
+    y     = n
+  )) +
+  
+  geom_alluvium(aes(fill = cat_flair),
+                width = 0.15, alpha = 0.8) +
+  geom_stratum(width = 0.15,
+               fill  = "grey90",
+               color = "black") +
+  geom_text(
+    stat = "stratum",
+    aes(
+      label = after_stat(stratum),
+      x     = after_stat(x) + ifelse(after_stat(x) == 1, -0.1, +0.1),
+      hjust = ifelse(after_stat(x) == 1, 1, 0)
+    ),
+    size          = 3,
+    check_overlap = TRUE
+  ) +
+  
+  # drop both left/right labels
+  scale_x_discrete(
+    limits = c("axis1", "axis2"),
+    expand = expansion(add = 0.3),
+    labels = NULL
+  ) +
+  
+  facet_wrap(
+    ~ species,
+    scales   = "free_y",
+    ncol     = 4,
+    labeller = labeller(species = label_value)
+  ) +
+  
+  labs(
+    title = "Gene‐level Mapping of Isoform Categories from FLAIR to Mandalorion at support level 2",
+    x     = NULL, y = NULL,
+    fill  = "FLAIR Category"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position     = "right",
+    axis.text.y         = element_blank(),
+    axis.ticks.y        = element_blank(),
+    axis.text.x         = element_blank(),
+    axis.ticks.x        = element_blank()
+  ) + NoLegend()
+
+
+
+ggsave("/work/vstorozhuk/data/plots/category_mapping_suppport2.png",
+       category_mapping, dpi = 600, width = 15, height = 10)
+```
+
+
+
+# Stats after filter
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+
+table1 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode01/Barcode01_flair_sqanti_S2_report_postfilter/isoforms_classification.txt")
+table1 %<>% mutate(Species = "Homo sapiens")
+
+table2 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode02/Barcode02_flair_sqanti_S2_report_postfilter/isoforms_classification.txt")
+table2 %<>% mutate(Species = "Pan troglodytes")
+
+table3 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode03/Barcode03_flair_sqanti_S2_report_postfilter/isoforms_classification.txt")
+table3 %<>% mutate(Species = "Macaca mulatta")
+
+table4 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode04/Barcode04_flair_sqanti_S2_report_postfilter/isoforms_classification.txt")
+table4 %<>% mutate(Species = "Callithrix jacchus")
+
+all_isoforms <- rbind(table1,table2,table3,table4)
+
+write.csv(all_isoforms, "/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/flair_support2_filtered.csv")
+
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+
+table1 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode01/Barcode01_mandalorion_R2_sqanti_report_postfilter/isoforms_classification.txt")
+table1 %<>% mutate(Species = "Homo sapiens")
+
+table2 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode02/Barcode02_mandalorion_R2_sqanti_report_postfilter/isoforms_classification.txt")
+table2 %<>% mutate(Species = "Pan troglodytes")
+
+table3 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode03/Barcode03_mandalorion_R2_sqanti_report_postfilter/isoforms_classification.txt")
+table3 %<>% mutate(Species = "Macaca mulatta")
+
+table4 <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode04/Barcode04_mandalorion_R2_sqanti_report_postfilter/isoforms_classification.txt")
+table4 %<>% mutate(Species = "Callithrix jacchus")
+
+all_isoforms <- rbind(table1,table2,table3,table4)
+
+write.csv(all_isoforms, "/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/mandalorion_support2_filtered.csv")
+
+```
+
+
+# Coding/ Non-coding
+```{r}
+
+all_tables_1 <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/mandalorion_support2_filtered.csv")
+all_tables_1 %<>% dplyr::mutate(pipeline = "mandalorion")
+
+all_tables_2 <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/flair_support2_filtered.csv")
+all_tables_2 %<>% dplyr::mutate(pipeline = "flair")
+
+all_tables <- rbind(all_tables_1, all_tables_2)
+
+desired_order <- c(
+  "Homo sapiens",
+  "Pan troglodytes",
+  "Macaca mulatta",
+  "Callithrix jacchus"
+)
+all_tables$Species <- factor(
+  all_tables$Species,
+  levels = desired_order
+)
+
+
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+heatmap_df <-
+  all_tables %>%
+  dplyr::count(pipeline, Species, structural_category, coding) %>%
+  group_by(pipeline, Species, structural_category) %>%
+  summarise(
+    n_coding = sum(n[coding == "coding"]),
+    total    = sum(n),
+    .groups  = "drop"
+  ) %>%
+  mutate(
+    prop_coding = n_coding / total,
+    structural_category = fct_relevel(
+      structural_category,
+      "full-splice_match",
+      "incomplete-splice_match",
+      "novel_in_catalog",
+      "novel_not_in_catalog"
+    ),
+    structural_category = fct_rev(structural_category)
+  )
+
+ggplot(heatmap_df,
+       aes(x = pipeline,
+           y = structural_category,
+           fill = prop_coding)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = percent(prop_coding, accuracy = 1)),
+            size = 3) +
+  scale_fill_viridis_c(
+    name   = "Coding %",
+    labels = percent_format(accuracy = 1)
+  ) +
+  facet_wrap(~Species,
+             scales = "free_y", ncol = 4) +
+  labs(
+    x        = "Pipeline",
+    y        = "Structural Category",
+    title    = "Proportion of isoforms with coding potential by Pipeline",
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x   = element_text(angle = 45, hjust = 1),
+    strip.text    = element_text(size = 9),
+    panel.spacing = unit(0.5, "lines")
+  )
+```
+
+# Coding: canonical / non canonical
+
+```{r}
+
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+
+all_tables_cod <- all_tables %>% filter(coding == "coding")
+
+noncan_count_df <- all_tables_cod %>%
+  filter(all_canonical == "non_canonical") %>%            
+  dplyr::count(pipeline, Species,  structural_category, name = "n_noncan") %>%
+  dplyr::mutate(
+    structural_category = fct_relevel(
+      structural_category,
+      "full-splice_match",
+      "incomplete-splice_match",
+      "novel_in_catalog",
+      "novel_not_in_catalog"
+    ) %>% fct_rev()
+  )
+
+
+ggplot(noncan_count_df,
+       aes(x    = pipeline,
+           y    = structural_category,
+           fill = n_noncan)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = n_noncan),
+            size     = 5,
+            fontface = "bold",
+            colour   = "white") +
+  scale_fill_viridis_c(
+    name   = "Non-canonical\ncount",
+    option = "D"
+  ) +
+  facet_wrap(~Species,
+             scales = "free_y") +
+  labs(
+    x     = "Pipeline",
+    y     = "Structural Category",
+    title = "Number of isoforms with non-canonical junctions"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x   = element_text(angle = 45, hjust = 1),
+    strip.text    = element_text(size = 10),
+    panel.spacing = unit(0.5, "lines"),
+    legend.title  = element_text(face = "bold"),
+    legend.text   = element_text(size = 9)
+  )
+
+
+```
+
+

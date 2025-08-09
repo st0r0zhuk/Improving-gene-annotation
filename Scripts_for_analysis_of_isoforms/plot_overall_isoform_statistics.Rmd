@@ -1,0 +1,2649 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-08-02"
+---
+
+
+# Stats after filter
+```{r}
+library(dplyr)
+library(readr)
+library(stringr)
+library(purrr)
+library(dplyr)
+library(readr)
+library(stringr)
+library(purrr)
+library(dplyr)
+library(readr)
+library(stringr)
+library(purrr)
+
+base_dir <- "/work/vstorozhuk/data/iso_pipeline/pipeline_outputs"
+barcodes <- sprintf("Barcode%02d", 1:4)
+
+parse_sqanti_path <- function(path) {
+  nm <- basename(path)
+  pipeline <- if_else(str_detect(nm, "mandalorion"), "mandalorion",
+               if_else(str_detect(nm, "flair"),       "flair",      NA_character_))
+  read_threshold <- case_when(
+    pipeline == "mandalorion" & str_detect(nm, "_R1") ~ "R1",
+    pipeline == "mandalorion" & str_detect(nm, "_R2") ~ "R2",
+    pipeline == "mandalorion"                             ~ "R3",
+    pipeline == "flair"       & str_detect(nm, "_S1")    ~ "S1",
+    pipeline == "flair"       & str_detect(nm, "_S2")    ~ "S2",
+    pipeline == "flair"                                 ~ "S3",
+    TRUE                                                ~ NA_character_
+  )
+  tibble(
+    pipeline,
+    read_threshold,
+    numeric_threshold = as.integer(str_extract(read_threshold, "\\d+"))
+  )
+}
+
+all_iso <- map_dfr(barcodes, function(bc) {
+  bc_dir <- file.path(base_dir, bc)
+  
+  # **match any** sqanti…report_postfilter directory
+  sqanti_dirs <- list.files(
+    bc_dir,
+    pattern    = "sqanti.*report_postfilter$",
+    full.names = TRUE
+  )
+  
+  # drop ones without the isoforms_classification.txt
+  sqanti_dirs <- keep(
+    sqanti_dirs,
+    ~ file.exists(file.path(.x, "isoforms_classification.txt"))
+  )
+  
+  map_dfr(sqanti_dirs, function(dir) {
+    meta  <- parse_sqanti_path(dir)
+    iso_f <- file.path(dir, "isoforms_classification.txt")
+    
+    read_tsv(iso_f, show_col_types = FALSE) %>%
+      mutate(
+        barcode           = bc,
+        numeric_barcode   = as.integer(str_extract(bc, "\\d+")),
+        pipeline          = meta$pipeline,
+        read_threshold    = meta$read_threshold,
+        numeric_threshold = meta$numeric_threshold
+      )
+  })
+})
+
+# check you now see S1, S2, S3, R1, R2, R3
+unique(all_iso$read_threshold)
+
+#  Define species lookup 
+species_lut <- c(
+  Barcode01 = "Homo sapiens",
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+#  Clean & annotate
+all_iso %<>% mutate(
+    # map barcode directly to species
+    species = recode(barcode, !!!species_lut)) 
+
+# remove predicted_NMD == TRUE, and RTS_stage == TRUE
+all_iso %<>%filter((predicted_NMD != TRUE)  |  is.na(predicted_NMD), RTS_stage == FALSE)
+
+write.csv(all_iso, "/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all.txt")
+
+
+all_iso %<>%filter(coding == "coding")
+write.csv(all_iso, "/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+
+```
+
+
+# count per category
+```{r}
+all_iso <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+plot_df <- all_iso %>% 
+  # 1) count across the cleaned/annotated vars
+  count(
+    species,
+    pipeline,
+    numeric_threshold,
+    structural_category,
+    name = "n_isoforms"
+  ) %>% 
+  # 2) fill in any missing combos with zero
+  complete(
+    species,
+    structural_category,
+    numeric_threshold,
+    pipeline,
+    fill = list(n_isoforms = 0)
+  ) %>% 
+  # 3) re‐level both factors in one go
+  mutate(
+    structural_category = fct_relevel(
+      structural_category,
+      "full-splice_match",
+      "incomplete-splice_match",
+      "novel_in_catalog",
+      "intergenic",
+      "fusion",
+      "novel_not_in_catalog",
+      "antisense",
+      "genic"
+    ),
+    species = fct_relevel(
+      species,
+      "Homo sapiens",
+      "Pan troglodytes",
+      "Macaca mulatta",
+      "Callithrix jacchus"
+    )
+  )
+
+stats_sweep <- ggplot(
+  plot_df,
+  aes(
+    x        = numeric_threshold,
+    y        = n_isoforms,
+    colour   = pipeline,
+    linetype = pipeline,
+    group    = pipeline
+  )
+) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_linetype_manual(values = c(mandalorion = "solid",
+                                   flair       = "dotted")) +
+  scale_colour_manual(values = c(mandalorion = "#1B9E77",
+                                 flair       = "#D95F02")) +
+  labs(
+    x        = "Read threshold",
+    y        = "Number of isoforms",
+    colour   = "Pipeline",
+    linetype = "Pipeline"
+  ) +
+  facet_wrap(
+    vars(species, structural_category),
+    nrow   = length(unique(plot_df$species)),
+    scales = "free",
+    drop   = FALSE          # keep panels even when they only contain the fake 0
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x   = element_text(angle = 45, hjust = 1),
+    panel.spacing = unit(0.8, "lines")
+  )
+
+ggsave("/work/vstorozhuk/data/plots/stats_sweep_after_filter.png",
+       stats_sweep, dpi = 600, width = 30, height = 10)
+```
+
+# barplot per subcategory
+```{r}
+# 1) Summarise counts, fill missing, compute pct if you want
+subcat_df <- all_iso %>%
+  count(
+    species,
+    pipeline,
+    numeric_threshold,
+    subcategory,
+    name = "n"
+  ) %>%
+  complete(
+    species,
+    pipeline,
+    numeric_threshold,
+    subcategory,
+    fill = list(n = 0)
+  ) %>%
+  group_by(species, pipeline, numeric_threshold) %>%
+  mutate(
+    total = sum(n),
+    pct   = n / total
+  ) %>%
+  ungroup() %>%
+  # 2) Re‐level factors
+  mutate(
+    species = factor(
+      species,
+      levels = c("Homo sapiens","Pan troglodytes", "Macaca mulatta", "Callithrix jacchus")
+    ),
+    pipeline = factor(
+      pipeline,
+      levels = c("mandalorion", "flair")
+    ),
+    numeric_threshold = factor(
+      numeric_threshold,
+      levels = sort(unique(numeric_threshold))
+    )
+  )
+
+# 3) Make a matching colour palette
+my_cols <- colorRampPalette(brewer.pal(12, "Set3"))(length(unique(subcat_df$subcategory)))
+
+# 4) Plot!
+ggplot(subcat_df,
+       aes(x = numeric_threshold,
+           y = n,
+           fill = subcategory)) +
+  geom_col() +
+  facet_grid(
+    rows = vars(species),
+    cols = vars(pipeline),
+    scales = "free",
+    drop   = FALSE
+  ) +
+  scale_fill_manual(
+    name   = "Subcategory",
+    values = my_cols
+  ) +
+  labs(
+    x = "Read threshold",
+    y = "Isoform count"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    strip.text      = element_text(size = 12),
+    legend.position = "bottom",
+    panel.spacing.x = unit(0.5, "lines"),
+    panel.spacing.y = unit(0.5, "lines")
+  )
+```
+
+
+# barplot per category
+```{r}
+# 1) Summarise counts, fill missing, compute pct if you want
+subcat_df <- all_iso %>%
+  count(
+    species,
+    pipeline,
+    numeric_threshold,
+    structural_category,
+    name = "n"
+  ) %>%
+  complete(
+    species,
+    pipeline,
+    numeric_threshold,
+    structural_category,
+    fill = list(n = 0)
+  ) %>%
+  group_by(species, pipeline, numeric_threshold) %>%
+  mutate(
+    total = sum(n),
+    pct   = n / total
+  ) %>%
+  ungroup() %>%
+  # 2) Re‐level factors
+  mutate(
+    species = factor(
+      species,
+      levels = c("Homo sapiens","Pan troglodytes", "Macaca mulatta", "Callithrix jacchus")
+    ),
+    pipeline = factor(
+      pipeline,
+      levels = c("mandalorion", "flair")
+    ),
+    numeric_threshold = factor(
+      numeric_threshold,
+      levels = sort(unique(numeric_threshold))
+    ),
+    structural_category = fct_relevel(
+      structural_category,
+      "full-splice_match",
+      "incomplete-splice_match",
+      "novel_in_catalog",
+      "intergenic",
+      "fusion",
+      "novel_not_in_catalog",
+      "antisense",
+      "genic"
+    )
+  )
+
+# 3) Make a matching colour palette
+my_cols <- colorRampPalette(brewer.pal(12, "Set3"))(length(unique(subcat_df$structural_category)))
+
+# 4) Plot!
+ggplot(subcat_df,
+       aes(x = numeric_threshold,
+           y = n,
+           fill = structural_category)) +
+  geom_col() +
+  facet_grid(
+    rows = vars(species),
+    cols = vars(pipeline),
+    scales = "free",
+    drop   = FALSE
+  ) +
+  scale_fill_manual(
+    name   = "structural_category",
+    values = my_cols
+  ) +
+  labs(
+    x = "Read threshold",
+    y = "Isoform count"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    strip.text      = element_text(size = 12),
+    legend.position = "bottom",
+    panel.spacing.x = unit(0.5, "lines"),
+    panel.spacing.y = unit(0.5, "lines")
+  )
+```
+
+
+# Coding/Non-coding
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all.txt")
+df_clean <- all_tables %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  select(-barcode_clean)   # drop the helper column
+
+
+heatmap_df <-
+  df_clean %>%
+  dplyr::count(pipeline, species, numeric_threshold, structural_category, coding) %>%
+  group_by(pipeline, species, numeric_threshold, structural_category) %>%
+  summarise(
+    n_coding = sum(n[coding == "coding"]),
+    total    = sum(n),
+    .groups  = "drop"
+  ) %>%
+  mutate(
+    prop_coding = n_coding / total,
+    # 1) pull your 4 key levels to the front...
+    structural_category = fct_relevel(
+      structural_category,
+      "full-splice_match",
+      "incomplete-splice_match",
+      "novel_in_catalog",
+      "novel_not_in_catalog"
+    ),
+    # 2) …then reverse the entire factor order
+    structural_category = fct_rev(structural_category)
+  )
+
+heatmap_plot <- ggplot(heatmap_df,
+       aes(x = pipeline,
+           y = structural_category,
+           fill = prop_coding)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = percent(prop_coding, accuracy = 1)),
+            size = 3) +
+  scale_fill_viridis_c(
+    name   = "Coding %",
+    labels = percent_format(accuracy = 1)
+  ) +
+  facet_grid(species ~ numeric_threshold,
+             scales = "free_y",
+             space  = "free_y") +
+  labs(
+    x        = "Pipeline",
+    y        = "Structural Category",
+    title    = "Proportion of isoforms with coding potential by Pipeline",
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x   = element_text(angle = 45, hjust = 1),
+    strip.text    = element_text(size = 9),
+    panel.spacing = unit(0.5, "lines")
+  )
+
+
+ggsave("/work/vstorozhuk/data/plots/coding_non_coding_heatmap.png",
+       heatmap_plot, dpi = 600, width = 15, height = 20)
+
+```
+
+
+# canonical non canonical SJ 
+```{r}
+
+# ── 2) Clean & annotate ──────────────────────────────────────────────────────
+df_clean <- all_tables %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  select(-barcode_clean)   # drop the helper column
+
+df_clean %<>% filter(coding == "coding")
+
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+
+
+# 1) Summarise raw non-canonical counts
+
+noncan_count_df <- df_clean %>%
+  filter(all_canonical == "non_canonical") %>%            # only keep the non-canonical rows
+  dplyr::count(pipeline, species, numeric_threshold, structural_category, name = "n_noncan") %>%
+  # reorder structural_category as before
+  mutate(
+    structural_category = fct_relevel(
+      structural_category,
+      "full-splice_match",
+      "incomplete-splice_match",
+      "novel_in_catalog",
+      "novel_not_in_catalog"
+    ) %>% fct_rev()
+  )
+
+
+noncan_count_plot <-  ggplot(noncan_count_df,
+       aes(x    = pipeline,
+           y    = structural_category,
+           fill = n_noncan)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = n_noncan),
+            size     = 5,
+            fontface = "bold",
+            colour   = "white") +
+  scale_fill_viridis_c(
+    name   = "Non-canonical\ncount",
+    option = "D"
+    # direction = 1  # default—remove or uncomment to use original palette
+  ) +
+  facet_grid(species ~ numeric_threshold,
+             scales = "free_y",
+             space  = "free_y") +
+  labs(
+    x     = "Pipeline",
+    y     = "Structural Category",
+    title = "Number of isoforms with non-canonical junctions"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x   = element_text(angle = 45, hjust = 1),
+    strip.text    = element_text(size = 10),
+    panel.spacing = unit(0.5, "lines"),
+    legend.title  = element_text(face = "bold"),
+    legend.text   = element_text(size = 9)
+  )
+
+ggsave("/work/vstorozhuk/data/plots/SJ_canonical_noncanonical_heatmap.png",
+       noncan_count_plot, dpi = 600, width = 10, height = 12)
+
+
+```
+
+# GO for non canon SJ
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(dplyr)
+library(dplyr)
+library(clusterProfiler)
+library(org.Hs.eg.db)     #
+
+selected_symbols <- df_clean %>%
+  filter(all_canonical == "non_canonical",
+         species == "Callithrix jacchus",
+         numeric_threshold == 2) %>%
+  pull(associated_gene) %>%
+  unique()
+
+universe_symbols <- df_clean %>%
+  filter(species == "Callithrix jacchus", numeric_threshold == 2) %>%
+  pull(associated_gene) %>%
+  unique()
+
+sel_map <- bitr(selected_symbols,
+                fromType   = "SYMBOL",
+                toType     = "ENTREZID",
+                OrgDb      = org.Hs.eg.db)
+sel_entrez <- sel_map$ENTREZID
+
+uni_map <- bitr(universe_symbols,
+                fromType   = "SYMBOL",
+                toType     = "ENTREZID",
+                OrgDb      = org.Hs.eg.db)
+uni_entrez <- uni_map$ENTREZID
+
+ego_bp <- enrichGO(gene          = sel_entrez,
+                #   universe      = uni_entrez,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "BP",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.5,
+                   qvalueCutoff  = 0.5,
+                   readable      = TRUE)
+
+ego_cc <- enrichGO(gene          = sel_entrez,
+               #    universe      = uni_entrez,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "CC",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.5,
+                   qvalueCutoff  = 0.5,
+                   readable      = TRUE)
+
+ego_mf <- enrichGO(gene          = sel_entrez,
+                  # universe      = uni_entrez,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "MF",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.5,
+                   qvalueCutoff  = 0.5,
+                   readable      = TRUE)
+
+ekegg <- enrichKEGG(gene          = sel_entrez,
+               #     universe      = uni_entrez,
+                    organism      = "hsa",
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = 0.5,
+                    qvalueCutoff  = 0.5)
+ekegg <- setReadable(ekegg,
+                     OrgDb   = org.Hs.eg.db,
+                     keyType = "ENTREZID")
+
+bp_df   <- as.data.frame(ego_bp)   %>% mutate(Category="GO:BP")
+cc_df   <- as.data.frame(ego_cc)   %>% mutate(Category="GO:CC")
+mf_df   <- as.data.frame(ego_mf)   %>% mutate(Category="GO:MF")
+kegg_df <- as.data.frame(ekegg)    %>% mutate(Category="KEGG")
+
+all_df <- bind_rows(bp_df, cc_df, mf_df, kegg_df)
+
+top5 <- all_df %>%
+  group_by(Category) %>%
+  arrange(qvalue) %>%
+  slice(1:5) %>%
+  ungroup() %>%
+  mutate(enrichment = -log10(qvalue),
+         Description = factor(Description,
+                              levels = rev(unique(Description))))
+
+library(ggplot2)
+ggplot(top5, aes(x = enrichment, y = Description)) +
+  geom_col(fill = "steelblue") +
+  facet_grid(Category ~ ., scales = "free_y", space = "free") +
+  labs(title = "Pathway Enrichments",
+       x = "-log10(q-value)",
+       y = NULL) +
+  theme_bw() +
+  theme(strip.background = element_rect(fill = "grey90"),
+        strip.text.y     = element_text(angle = 0),
+        panel.grid.major.y = element_blank())
+```
+
+
+
+
+# novelty vs exprsssion
+```{r}
+library(ggplot2)
+library(scales)
+library(forcats)
+library(dplyr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+# 1. Load your combined classifications (adjust sep if needed)
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+# 2. Define barcode → species mapping
+species_map <- c(
+  "02" = "Pan troglodytes",
+  "03" = "Macaca mulatta",
+  "04" = "Callithrix jacchus"
+)
+
+# 3. Filter, recode & tag species
+df_all <- all_tables %>%
+  filter(!is.na(iso_exp), iso_exp > 0) %>%
+  mutate(
+    structural_category = fct_collapse(
+      structural_category,
+      other = c("genic","intergenic","antisense","fusion","genic_intron")
+    ) %>%
+      fct_relevel(
+        "full-splice_match",      # FSM
+        "incomplete-splice_match",# ISM
+        "novel_in_catalog",       # NIC
+        "novel_not_in_catalog",   # NNC
+        "other"
+      ),
+
+    # map the numeric 2/3/4 to species
+    species = case_when(
+      numeric_barcode == 2 ~ "Pan troglodytes",
+      numeric_barcode == 3 ~ "Macaca mulatta",
+      numeric_barcode == 4 ~ "Callithrix jacchus",
+      TRUE                 ~ NA_character_
+    )
+  )
+
+# 4. Build the plot
+breaks_exp <- 10^(0:6)
+
+novelty_expr <- ggplot(df_all, aes(x = iso_exp, fill = structural_category)) +
+  geom_histogram(
+    breaks   = breaks_exp,
+    position = "fill",
+    color    = NA
+  ) +
+  scale_x_log10(
+    limits = c(min(breaks_exp), max(breaks_exp)),
+    breaks = breaks_exp,
+    labels = trans_format("log10", math_format(10^.x)),
+    expand = c(0,0)
+  ) +
+  scale_y_continuous(
+    labels = percent_format(accuracy = 1),
+    expand = c(0,0)
+  ) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name    = "Structural\ncategory"
+  ) +
+  labs(
+    x = "Isoform expression (TPM)",
+    y = "Transcript proportion"
+  ) +
+  # facet rows = species, cols = numeric_threshold
+  facet_grid(species ~ numeric_threshold, scales = "fixed", space = "free") +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "white"),
+    strip.text       = element_text(face = "bold")
+  )
+
+# 5. Save to file
+ggsave(
+  filename = "/work/vstorozhuk/data/plots/novelty_expr_by_species_threshold.png",
+  plot     = novelty_expr,
+  dpi      = 600,
+  width    = 12,
+  height   = 8
+)
+
+```
+
+
+```{r}
+library(ggplot2)
+library(scales)
+library(forcats)
+library(dplyr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+# 1. Read in your combined classifications
+all_tables <- read.csv(
+  "/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+# 2. Map numeric barcodes to species names
+species_map <- c(
+  "2" = "Pan troglodytes",
+  "3" = "Macaca mulatta",
+  "4" = "Callithrix jacchus"
+)
+
+# 3. Recode structural categories, assign species, and drop any unknown species
+df_all <- all_tables %>%
+  mutate(
+    structural_category = fct_collapse(
+      structural_category,
+      other = c("genic", "intergenic", "antisense", "fusion", "genic_intron")
+    ) %>%
+      fct_relevel(
+        "full-splice_match",
+        "incomplete-splice_match",
+        "novel_in_catalog",
+        "novel_not_in_catalog",
+        "other"
+      ),
+    species = species_map[ as.character(numeric_barcode) ]
+  ) %>%
+  filter(!is.na(species))
+
+# 4. Cap all transcript lengths above 6 kb to exactly 6000 bp
+df_all <- df_all %>%
+  mutate(length2 = if_else(length > 6000, 6000, length))
+
+# 5. Define breaks (0, 1k, …, 6k) and labels (last one “6k+”)
+my_breaks <- seq(0, 6000, by = 1000)
+my_labels <- paste0(0:6, "k")
+my_labels[7] <- "6k+"
+
+# 6. Make the stacked “proportion” histogram with a final “6k+” bar
+novelty_length <-ggplot(df_all, aes(x = length2, fill = structural_category)) +
+  geom_histogram(
+    breaks   = my_breaks,
+    position = "fill",
+    color    = NA
+  ) +
+  scale_x_continuous(
+    limits = c(0, 6000),
+    breaks = my_breaks,
+    labels = my_labels,
+    expand = c(0, 0)
+  ) +
+  scale_y_continuous(
+    labels = percent_format(1),
+    expand = c(0, 0)
+  ) +
+  scale_fill_brewer(
+    palette = "Set2",
+    name    = "Structural\ncategory"
+  ) +
+  labs(
+    x = "Isoform length (bp)",
+    y = "Transcript proportion"
+  ) +
+  facet_grid(
+    species ~ numeric_threshold,
+    scales = "fixed",
+    space  = "free"
+  ) +
+  theme_classic(14) +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "white"),
+    strip.text       = element_text(face = "bold")
+  )
+
+ggsave(
+  filename = "/work/vstorozhuk/data/plots/novelty_length_by_species_threshold.png",
+  plot     = novelty_length,
+  dpi      = 600,
+  width    = 12,
+  height   = 8
+)
+
+```
+
+
+
+
+# RNA-seq support
+The min_sample_cov column is simply the minimum RNA-Seq coverage that SQANTI3 observed for that isoform across all of your individual samples
+
+```{r}
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+all_tables %<>% filter(coding == "coding", RTS_stage == FALSE, barcode != "Barcode01", structural_category != "fusion", structural_category != "antisense" ) 
+
+species_lut <- c(
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+
+all_tables <- all_tables %>% mutate(barcode_chr = as.character(barcode),species = species_lut[barcode_chr])%>%select(-barcode_chr)
+
+
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1) Summarise & complete as before
+cat_levels <- c(
+  "full-splice_match",
+  "incomplete-splice_match",
+  "novel_in_catalog",
+  "novel_not_in_catalog",
+  "genic",
+  "intergenic")
+
+summary_by_cat <- all_tables %>%
+  mutate(
+    supported = if_else(min_sample_cov > 0, TRUE, FALSE, missing = FALSE),
+    structural_category = factor(structural_category, levels = cat_levels)
+  ) %>%
+  group_by(species, numeric_threshold, structural_category, pipeline) %>%
+  summarise(
+    pct_supported = mean(supported) * 100,
+    n_isoforms    = n(),
+    .groups       = "drop"
+  ) %>%
+  complete(
+    species,
+    numeric_threshold,
+    structural_category,
+    pipeline,
+    fill = list(pct_supported = 0, n_isoforms = 0)
+  )
+
+ggplot(summary_by_cat,
+       aes(x = structural_category,
+           y = pct_supported,
+           fill = pipeline)) +
+  geom_col(
+    position = position_dodge(width = 0.8),
+    width    = 0.7
+  ) +
+  facet_grid(
+    rows   = vars(species),
+    cols   = vars(numeric_threshold),
+    scales = "fixed",
+    space  = "fixed"
+  ) +
+  # major at every 10, minor at every 5
+  scale_y_continuous(
+    breaks      = seq(50, 100, by = 10),
+    minor_breaks = seq(50, 100, by = 5),
+    expand      = c(0, 0)
+  ) +
+  coord_cartesian(ylim = c(50, 100)) +
+  labs(
+    x    = "SQANTI3 Structural Category",
+    y    = "Percent Supported by RNA-Seq",
+    fill = "Pipeline"
+  ) +
+  theme_bw() +
+  theme(
+    strip.background     = element_rect(fill = "grey95", color = NA),
+    panel.grid.minor.y    = element_line(color = "grey90", size = 0.25),
+    panel.grid.major.y    = element_line(color = "grey80", size = 0.4),
+    panel.grid.minor.x    = element_blank(),
+    panel.grid.major.x    = element_blank(),
+    axis.text.x           = element_text(angle = 45, hjust = 1),
+    panel.spacing.x       = unit(0.5, "lines")
+  )
+
+```
+
+A ratio_TSS > 1 means there is more short‐read coverage just inside the transcript than outside, lending support to that annotated start site.
+# TSS support from RNA-Seq
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+all_tables %<>% filter(coding == "coding", RTS_stage == FALSE, barcode != "Barcode01", structural_category != "fusion", structural_category != "antisense", ) 
+
+species_lut <- c(
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+all_tables <- all_tables %>% mutate(barcode_chr = as.character(barcode),species = species_lut[barcode_chr])%>%select(-barcode_chr)
+
+cat_levels <- c(
+  "full-splice_match",
+  "incomplete-splice_match",
+  "novel_in_catalog",
+  "novel_not_in_catalog",
+  "genic",
+  "intergenic")
+
+
+
+library(ggplot2)
+library(ggbeeswarm)
+library(scales)
+
+ggplot(all_tables, aes(
+    x     = structural_category,
+    y     = ratio_TSS,
+    color = pipeline
+  )) +
+  # beeswarm points, dodged so pipelines sit side-by-side within each category
+  geom_quasirandom(
+    dodge.width = 0.8,
+    size        = 1.5,
+    alpha       = 0.7
+  ) +
+  # horizontal “errorbar” at the mean of each pipeline‐category
+  stat_summary(
+    fun      = mean,
+    fun.min  = mean,
+    fun.max  = mean,
+    geom     = "errorbar",
+    aes(group = pipeline),
+    position = position_dodge(width = 0.8),
+    width    = 0.6,
+    size     = 0.8,
+    color    = "black"
+  ) +
+  # facet by both Species and numeric_threshold
+  facet_wrap(~ species + numeric_threshold, scales = "free_y") +
+  scale_y_log10(
+    breaks = 10^seq(-1, 6, by = 1),
+    labels = comma_format()
+  ) +
+  labs(
+    x     = "Structural category",
+    y     = expression(Ratio[TSS]~"(log scale)"),
+    color = "Pipeline"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.text       = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+all_tables %<>% filter(coding == "coding", RTS_stage == FALSE, barcode != "Barcode01", structural_category != "fusion", structural_category != "antisense", ) 
+
+species_lut <- c(
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+all_tables <- all_tables %>% mutate(barcode_chr = as.character(barcode),species = species_lut[barcode_chr])%>%select(-barcode_chr)
+
+
+library(dplyr)
+library(ggplot2)
+library(ggbeeswarm)
+
+all_tables <- all_tables %>%
+  mutate(
+    numeric_threshold   = factor(numeric_threshold)
+  )
+
+ggplot(all_tables, aes(
+    x     = subcategory,
+    y     = ratio_TSS,
+    color = pipeline
+  )) +
+  geom_quasirandom(
+    dodge.width = 0.8,
+    size        = 1.5,
+    alpha       = 0.7
+  ) +
+  stat_summary(
+    fun      = mean,
+    fun.min  = mean,
+    fun.max  = mean,
+    geom     = "errorbar",
+    aes(group = pipeline),
+    position = position_dodge(width = 0.8),
+    width    = 0.6,
+    size     = 0.8,
+    color    = "black"
+  ) +
+  # facet by both Species and numeric_threshold
+  facet_wrap(~ species + numeric_threshold, scales = "free_y") +
+  scale_y_log10(
+    breaks = 10^seq(-1, 6, by = 1),
+    labels = comma_format()
+  ) +
+  labs(
+    x     = "Structural subcategory",
+    y     = expression(Ratio[TSS]~"(log scale)"),
+    color = "Pipeline"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.text       = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+
+
+# CAGE support
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+all_tables %<>% filter(coding == "coding", RTS_stage == FALSE, barcode != "Barcode01", structural_category != "fusion", structural_category != "antisense", structural_category != "intergenic", structural_category != "genic" ) 
+
+species_lut <- c(
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+all_tables <- all_tables %>% mutate(barcode_chr = as.character(barcode),species = species_lut[barcode_chr])%>%select(-barcode_chr)
+
+cat_levels <- c(
+  "full-splice_match",
+  "incomplete-splice_match",
+  "novel_in_catalog",
+  "novel_not_in_catalog")
+
+library(dplyr)
+library(ggplot2)
+library(ggbeeswarm)
+
+all_tables <- all_tables %>%
+  mutate(
+    structural_category = factor(structural_category, levels = cat_levels),
+    numeric_threshold   = factor(numeric_threshold)
+  )
+
+# 1) Summarise to get percent within_CAGE_peak == TRUE
+summary_df <- all_tables %>%
+  group_by(structural_category, pipeline, numeric_threshold, species) %>%
+  summarize(
+    pct_within = mean(within_CAGE_peak, na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+summary_df2 <- summary_df %>%
+  ungroup() %>%
+  complete(
+    species,
+    numeric_threshold,
+    structural_category,
+    pipeline,
+    fill = list(pct_within = 0)
+  )
+
+ggplot(summary_df2, aes(
+  x    = structural_category,
+  y    = pct_within,
+  fill = pipeline
+)) +
+  geom_col(
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    width    = 0.7
+  ) +
+  facet_grid(
+    species ~ numeric_threshold,
+    scales = "free",
+    space  = "free",
+    labeller = label_both
+  ) +
+  scale_y_continuous(
+    labels = percent_format(scale = 1),
+    expand = expansion(mult = c(0, .05))
+  ) +
+  labs(
+    x    = "Structural Category",
+    y    = "% Within CAGE Peak",
+    fill = "Pipeline"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "grey95")
+  )
+
+
+```
+
+# % FSM subcategories overlap CAGE
+```{r}
+
+# load libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+# 1. Read in and filter
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+all_tables <- all_tables %>%
+  filter(barcode != "Barcode01",
+         structural_category == "full-splice_match") %>%
+  mutate(
+    subcategory       = factor(subcategory),
+    numeric_threshold = factor(numeric_threshold)
+  )
+
+# 2. Summarise percent within CAGE peak by subcategory
+summary_sub <- all_tables %>%
+  group_by(subcategory, pipeline, numeric_threshold, species) %>%
+  summarize(
+    pct_within = mean(within_CAGE_peak, na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+# 3. Ensure every combination is present (fill missing with 0%)
+summary_sub <- summary_sub %>%
+  complete(
+    species,
+    pipeline,
+    numeric_threshold,
+    subcategory,
+    fill = list(pct_within = 0)
+  )
+
+# 4. Plot
+# 4. Plot (fill by pipeline; facet only by species and threshold)
+ggplot(summary_sub, aes(
+  x    = subcategory,
+  y    = pct_within,
+  fill = pipeline
+)) +
+  geom_col(
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    width    = 0.7
+  ) +
+  facet_grid(
+    species ~ numeric_threshold,
+    scales = "free_y",
+    space  = "free_x",
+    labeller = label_both
+  ) +
+  scale_y_continuous(
+    labels = percent_format(scale = 1),
+    expand = expansion(mult = c(0, .05))
+  ) +
+  labs(
+    x    = "Subcategory",
+    y    = "% Isoforms within CAGE Peak",
+    fill = "Pipeline"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "grey95"),
+    strip.placement  = "outside"
+  )
+```
+
+# count FSM subcategorie overlap CAGE
+```{r}
+# load libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+# 1. Read in and filter (as before)
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+all_tables <- all_tables %>%
+  filter(barcode != "Barcode01",
+         structural_category == "full-splice_match") %>%
+  mutate(
+    subcategory       = factor(subcategory),
+    numeric_threshold = factor(numeric_threshold)
+  )
+
+# 2. Summarise **count** within CAGE peak by subcategory
+summary_cnt <- all_tables %>%
+  group_by(subcategory, pipeline, numeric_threshold, species) %>%
+  summarize(
+    n_within = sum(within_CAGE_peak, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 3. Ensure every combination is present (fill missing with 0)
+summary_cnt <- summary_cnt %>%
+  complete(
+    species,
+    pipeline,
+    numeric_threshold,
+    subcategory,
+    fill = list(n_within = 0)
+  )
+
+# 4. Plot counts instead of percentages
+ggplot(summary_cnt, aes(
+  x    = subcategory,
+  y    = n_within,
+  fill = pipeline
+)) +
+  geom_col(
+    position = position_dodge2(width = 0.9, preserve = "single"),
+    width    = 0.7
+  ) +
+  facet_grid(
+    species ~ numeric_threshold,
+    scales = "free_y",
+    space  = "free_x",
+    labeller = label_both
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, .05))
+  ) +
+  labs(
+    x    = "Subcategory",
+    y    = "# Isoforms within CAGE Peak",
+    fill = "Pipeline"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "grey95"),
+    strip.placement  = "outside"
+  )
+```
+
+
+# distance to CAGE
+```{r}
+
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+all_tables %<>% filter(coding == "coding", RTS_stage == FALSE, barcode != "Barcode01", structural_category != "fusion", structural_category != "antisense", structural_category != "intergenic", structural_category != "genic" ) 
+
+species_lut <- c(
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+all_tables <- all_tables %>% mutate(barcode_chr = as.character(barcode),species = species_lut[barcode_chr])%>%select(-barcode_chr)
+
+cat_levels <- c(
+  "full-splice_match",
+  "incomplete-splice_match",
+  "novel_in_catalog",
+  "novel_not_in_catalog")
+
+library(dplyr)
+library(ggplot2)
+library(ggbeeswarm)
+
+all_tables <- all_tables %>%
+  mutate(
+    structural_category = factor(structural_category, levels = cat_levels),
+    numeric_threshold   = factor(numeric_threshold)
+  )
+
+
+
+
+library(ggplot2)
+library(scales)
+
+ggplot(all_tables, aes(
+  x        = abs(dist_to_CAGE_peak),
+  color    = structural_category,
+  linetype = pipeline
+)) +
+  geom_density(na.rm = TRUE, size = 1) +
+  facet_grid(
+    species ~ numeric_threshold,
+    scales   = "free_y",
+    space    = "free_y",
+    labeller = label_both
+  ) +
+  scale_x_log10(
+    name   = "Distance to CAGE Peak (bp, log₁₀)",
+    breaks = trans_breaks("log10", function(x) 10^x),
+    labels = trans_format("log10", math_format(10^.x))
+  ) +
+  annotation_logticks(sides = "b") +
+  scale_y_continuous(
+    name   = "Density",
+    expand = expansion(mult = c(0, .05))
+  ) +
+  scale_color_brewer(
+    name    = "Structural Category",
+    palette = "Set2"
+  ) +
+  scale_linetype_discrete(
+    name = "Pipeline"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "grey95"),
+    panel.spacing    = unit(0.5, "lines")
+  )
+
+```
+
+
+
+
+
+
+
+# FLAIR categories mapped to Mandalorion
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggalluvial)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggalluvial)
+library(ggplot2)
+
+
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+
+# ── 2) Clean & annotate ──────────────────────────────────────────────────────
+df_clean <- all_tables %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  dplyr::select(-barcode_clean)   # drop the helper column
+
+
+
+df_clean %<>% filter(coding == "coding")
+
+
+#––– 1) Summarise per gene × pipeline × category
+gene_summary <- df_clean %>%
+  filter(pipeline %in% c("flair", "mandalorion")) %>%
+  dplyr::count(
+    species,
+    numeric_threshold,
+    associated_gene,
+    pipeline,
+    structural_category,
+    name = "n_isoforms"
+  ) %>%
+  group_by(species, numeric_threshold, associated_gene, pipeline) %>%
+  slice_max(n_isoforms, with_ties = FALSE) %>%
+  ungroup()
+
+#––– 2) Pivot wide & recode to SQANTI‐style abbreviations
+gene_wide <- gene_summary %>%
+  dplyr::select(-n_isoforms) %>%
+  pivot_wider(
+    id_cols     = c(species, numeric_threshold, associated_gene),
+    names_from  = pipeline,
+    values_from = structural_category,
+    values_fill = list(structural_category = "None")
+  ) %>%
+  rename(
+    cat_flair       = flair,
+    cat_mandalorion = mandalorion
+  ) %>%
+  mutate(
+    cat_flair = recode(cat_flair,
+      "full-splice_match"       = "FSM",
+      "incomplete-splice_match" = "ISM",
+      "novel_in_catalog"        = "NIC",
+      "novel_not_in_catalog"    = "NNC",
+      "fusion"                  = "FU",
+      "None"                    = "None"
+    ),
+    cat_mandalorion = recode(cat_mandalorion,
+      "full-splice_match"       = "FSM",
+      "incomplete-splice_match" = "ISM",
+      "novel_in_catalog"        = "NIC",
+      "novel_not_in_catalog"    = "NNC",
+      "fusion"                  = "FU",
+      "None"                    = "None"
+    )
+  )
+
+#––– 3) Count the gene‐level flows across all support levels
+gene_flows <- gene_wide %>%
+  dplyr::count(species, numeric_threshold, cat_flair, cat_mandalorion)
+
+#––– 4) Plot—no manual factor levels, no filtering, facet as in your original
+category_mapping_full <- ggplot(gene_flows,
+       aes(axis1 = cat_flair,
+           axis2 = cat_mandalorion,
+           y     = n)) +
+  
+  # coloured flows by FLAIR category
+  geom_alluvium(aes(fill = cat_flair),
+                width = 0.15, alpha = 0.8) +
+  
+  # grey blocks (strata)
+  geom_stratum(width = 0.15,
+               fill  = "grey90",
+               color = "black") +
+  
+  # labels outside each bar
+  geom_text(
+    stat = "stratum",
+    aes(
+      label = after_stat(stratum),
+      x     = after_stat(x) +
+                ifelse(after_stat(x) == 1, -0.1, +0.1),
+      hjust = ifelse(after_stat(x) == 1, 1, 0)
+    ),
+    size          = 3,
+    check_overlap = TRUE
+  ) +
+  
+  # axes labels & expansion
+  scale_x_discrete(
+    limits = c("axis1", "axis2"),
+    labels = c("FLAIR", "Mandalorion"),
+    expand = expansion(add = 0.3)
+  ) +
+  
+  # facets for species × support level
+  facet_wrap(
+    ~ species + numeric_threshold,
+    scales   = "free_y",
+    ncol     = 3,
+    labeller = labeller(
+      species       = label_value,
+      numeric_threshold = label_value
+    )
+  ) +
+  
+  labs(
+    title = "Gene‐level Mapping of Isoform Categories from FLAIR to Mandalorion",
+    x     = NULL,
+    y     = NULL,
+    fill  = "FLAIR Category"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    axis.text.y     = element_blank(),
+    axis.ticks.y    = element_blank()
+  ) + NoLegend()
+
+
+
+ggsave("/work/vstorozhuk/data/plots/category_mapping_suppport_full.png",
+       category_mapping_full, dpi = 600, width = 25, height = 20)
+
+
+```
+
+
+# FSM
+##  FSM dissection
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(dplyr)
+library(stringr)
+library(readr)    # for parse_number()
+library(forcats)
+library(ggplot2)
+
+# ── 1) Define species lookup ──────────────────────────────────────────────────
+species_lut <- c(
+  Barcode01 = "Homo sapiens",
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+# ── 2) Clean & annotate ──────────────────────────────────────────────────────
+df_clean <- all_tables %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  dplyr::select(-barcode_clean)   # drop the helper column
+
+# ── 3) Summarise counts & percentages ────────────────────────────────────────
+df_summary <- df_clean %>%
+  filter(structural_category == "full-splice_match") %>%
+  dplyr::count(species, pipeline, numeric_threshold, subcategory) %>%
+  group_by(species, pipeline, numeric_threshold) %>%
+  mutate(
+    prop = n / sum(n) * 100
+  ) %>%
+  ungroup() %>%
+  # ensure a consistent stacking order (largest slice drawn first → bottom)
+  mutate(
+    subcategory = fct_reorder(subcategory, n, .fun = sum, .desc = TRUE)
+  )
+
+# ── 4) Plot: stacked bar per threshold, faceted by species (rows) & pipeline (cols) ─
+plot_FSM1 <- ggplot(df_summary,
+       aes(x = numeric_threshold, y = prop, fill = subcategory)) +
+  
+  geom_col(
+    color    = "white",
+    size     = 0.3,
+    position = position_stack(reverse = TRUE)
+  ) +
+  
+  geom_text(
+    aes(label = paste0(n, " (", round(prop,1), "%)")),
+    position = position_stack(vjust = 0.5, reverse = TRUE),
+    size     = 3,
+    color    = "white"
+  ) +
+  
+  labs(
+    x     = "Read threshold",
+    y     = NULL
+  ) +
+  
+  facet_grid(pipeline ~ species, switch = "y") +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    # remove the y-axis text & ticks
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    
+    panel.grid.major.x  = element_blank(),
+    axis.text.x         = element_text(angle = 45, hjust = 1),
+    
+    strip.placement     = "outside",
+    strip.background    = element_blank(),
+    strip.text.y.left   = element_text(angle = 0, face = "bold"),
+    strip.text.x        = element_text(face = "bold")
+  )
+
+
+
+ggsave("/work/vstorozhuk/data/plots/FSM_subcategories.png",
+       plot_FSM1, dpi = 600, width = 15, height = 12)
+
+```
+
+## Flair mapped to Mandalorion FSM
+```{r}
+#––– libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggalluvial)
+library(forcats)
+
+#––– Define a named vector for recoding FSM subcategory labels
+recode_sub <- c(
+  "reference_match"      = "Ref match",
+  "alternative_3end"     = "Alt 3′",
+  "mono-exon"            = "Mono-exon",
+  "alternative_5end"     = "Alt 5′",
+  "alternative_3end5end" = "Alt 3′& 5′"
+)
+
+#––– 1) Summarise per gene × pipeline × subcategory (within FSM only)
+fsm_summary <- df_clean %>%
+  filter(
+    pipeline %in% c("flair", "mandalorion"),
+    structural_category == "full-splice_match"
+  ) %>%
+  dplyr::count(
+    species,
+    numeric_threshold,
+    associated_gene,
+    pipeline,
+    subcategory,
+    name = "n_isoforms"
+  ) %>%
+  group_by(species, numeric_threshold, associated_gene, pipeline) %>%
+  slice_max(n_isoforms, with_ties = FALSE) %>%
+  ungroup()
+
+#––– 2) Pivot wide & recode subcategory labels
+fsm_wide <- fsm_summary %>%
+  dplyr::select(-n_isoforms) %>%
+  pivot_wider(
+    id_cols     = c(species, numeric_threshold, associated_gene),
+    names_from  = pipeline,
+    values_from = subcategory,
+    values_fill = list(subcategory = "None")
+  ) %>%
+  rename(
+    cat_flair_sub       = flair,
+    cat_mandalorion_sub = mandalorion
+  ) %>%
+  mutate(
+    cat_flair_sub       = recode(cat_flair_sub,       !!!recode_sub),
+    cat_mandalorion_sub = recode(cat_mandalorion_sub, !!!recode_sub)
+  )
+
+#––– 3) Count the gene‐level flows of FSM subcategories
+fsm_flows <- fsm_wide %>%
+  dplyr::count(species, numeric_threshold, cat_flair_sub, cat_mandalorion_sub)
+
+#––– 4) Alluvial plot of FSM subcategory flows (all thresholds & species)
+fsm_mapping <- ggplot(fsm_flows,
+       aes(axis1 = cat_flair_sub,
+           axis2 = cat_mandalorion_sub,
+           y     = n)) +
+  
+  # coloured flows by FLAIR subcategory
+  geom_alluvium(aes(fill = cat_flair_sub),
+                width = 0.15, alpha = 0.8) +
+  
+  # grey stratum blocks
+  geom_stratum(width = 0.15,
+               fill  = "grey90",
+               color = "black") +
+  
+  # stratum labels just outside each block
+  geom_text(
+    stat = "stratum",
+    aes(
+      label = after_stat(stratum),
+      x     = after_stat(x) + ifelse(after_stat(x) == 1, -0.1, +0.1),
+      hjust = ifelse(after_stat(x) == 1, 1, 0)
+    ),
+    size          = 3,
+    check_overlap = TRUE
+  ) +
+  
+  # keep the axis spacing but remove tick labels
+  scale_x_discrete(
+    limits = c("axis1", "axis2"),
+    expand = expansion(add = 0.3)
+  ) +
+  
+  # facet by species (rows) and numeric_threshold (cols)
+  facet_wrap(
+    ~ species + numeric_threshold,
+    scales   = "free_y",
+    ncol     = 3,
+    labeller = labeller(
+      species       = label_value,
+      numeric_threshold = label_value
+    )
+  ) +
+  
+  labs(
+    title = "Flow of subcategories within Full-Splice Match (FSM)",
+    x     = NULL,
+    y     = NULL,
+    fill  = "FSM Subcategory"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    axis.text.y     = element_blank(),
+    axis.ticks.y    = element_blank(),
+    axis.text.x     = element_blank(),  # hide pipeline names
+    axis.ticks.x    = element_blank()
+  ) +
+  NoLegend()
+
+
+
+ggsave("/work/vstorozhuk/data/plots/FSM_category_mapping_suppport_full.png",
+       fsm_mapping, dpi = 600, width = 25, height = 20)
+```
+
+
+## tss / tts for fsm all
+```{r}
+# ── 1) Define species lookup ──────────────────────────────────────────────────
+species_lut <- c(
+  Barcode01 = "Homo sapiens",
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+# ── 2) Clean & annotate ──────────────────────────────────────────────────────
+FSM_clean <- all_tables %>% filter(structural_category == "full-splice_match") %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  select(-barcode_clean)   # drop the helper column
+
+FSM_clean %<>% filter(coding == "coding")
+
+
+# diff_to_gene_TSS - gene level TSS
+# diff_to_TSS - associated transcript level TSS
+
+
+
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+# 1) Define nicer labels for the four metrics
+metric_labels <- c(
+  diff_to_TSS        = "Transcript-level TSS",
+  diff_to_TTS        = "Transcript-level TTS",
+  diff_to_gene_TSS   = "Gene-level TSS",
+  diff_to_gene_TTS   = "Gene-level TTS"
+)
+
+# 2) Long format with factor levels & labels
+FSM_long <- FSM_clean %>%
+  pivot_longer(
+    cols      = c(diff_to_TSS, diff_to_TTS, diff_to_gene_TSS, diff_to_gene_TTS),
+    names_to  = "metric",
+    values_to = "distance_bp"
+  ) %>%
+  mutate(
+    metric = factor(metric, 
+                    levels = names(metric_labels),
+                    labels = metric_labels),
+    numeric_threshold = factor(numeric_threshold)  # ensure discrete order
+  )
+
+# 3) Plot
+TTS_TSS <- ggplot(FSM_long, aes(x = numeric_threshold, y = distance_bp, fill = pipeline)) +
+  # dashed zero‐line
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  # boxplots (hide extreme outliers)
+  geom_boxplot(outlier.shape = NA, alpha = 0.8, width = 0.7) +
+  # jittered points underneath
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.7),
+              size = 0.5, alpha = 0.3) +
+  # median markers
+  stat_summary(fun = median, geom = "point", shape = 23, size = 2, color = "black", fill = "white",
+               position = position_dodge(width = 0.7)) +
+  # facets: rows by species, cols by metric
+  facet_grid(species ~ metric, scales = "free_y", switch = "y") +
+  # color palette
+  scale_fill_brewer(palette = "Set1") +
+  # labels
+  labs(
+    title    = "FSM Isoform End Distances to TSS/TTS (transcript- & gene-level)",
+    x        = "Threshold Number",
+    y        = "Distance (bp)",
+    fill     = "Pipeline"
+  ) +
+  # theme cleanup
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position        = "bottom",
+    axis.text.x            = element_text(angle = 45, hjust = 1),
+    strip.text             = element_text(face = "bold", size = 10),
+    panel.grid.major.x     = element_blank(),
+    panel.grid.minor      = element_blank(),
+    panel.spacing         = unit(0.5, "lines")
+  )
+
+ggsave("/work/vstorozhuk/data/plots/FSM_TTS_TSS.png",
+       TTS_TSS, dpi = 600, width = 20, height = 15)
+
+
+```
+
+calculate per transcript what is the difference in bp between Flair and Mandalorion called TTS and TSS
+
+
+
+
+# ISM
+## ISM dissection
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(dplyr)
+library(stringr)
+library(readr)    # for parse_number()
+library(forcats)
+library(ggplot2)
+
+
+all_tables <- read.csv("/work/vstorozhuk/data/iso_pipeline/stats/table_after_filter.csv")
+
+
+
+
+# ── 1) Define species lookup ──────────────────────────────────────────────────
+species_lut <- c(
+  Barcode01 = "Homo sapiens",
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+# ── 2) Clean & annotate ──────────────────────────────────────────────────────
+df_clean <- all_tables %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  dplyr::select(-barcode_clean)   # drop the helper column
+
+# ── 3) Summarise counts & percentages ────────────────────────────────────────
+df_summary <- df_clean %>%
+  filter(structural_category == "incomplete-splice_match") %>%
+  dplyr::count(species, pipeline, numeric_threshold, subcategory) %>%
+  group_by(species, pipeline, numeric_threshold) %>%
+  mutate(
+    prop = n / sum(n) * 100
+  ) %>%
+  ungroup() %>%
+  # ensure a consistent stacking order (largest slice drawn first → bottom)
+  mutate(
+    subcategory = fct_reorder(subcategory, n, .fun = sum, .desc = TRUE)
+  )
+
+# ── 4) Plot: stacked bar per threshold, faceted by species (rows) & pipeline (cols) ─
+plot_ISM1 <- ggplot(df_summary,
+       aes(x = numeric_threshold, y = prop, fill = subcategory)) +
+  
+  geom_col(
+    color    = "white",
+    size     = 0.3,
+    position = position_stack(reverse = TRUE)
+  ) +
+  
+  geom_text(
+    aes(label = paste0(n, " (", round(prop,1), "%)")),
+    position = position_stack(vjust = 0.5, reverse = TRUE),
+    size     = 3,
+    color    = "white"
+  ) +
+  
+  labs(
+    x     = "Read threshold",
+    y     = NULL
+  ) +
+  
+  facet_grid(pipeline ~ species, switch = "y") +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    # remove the y-axis text & ticks
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    
+    panel.grid.major.x  = element_blank(),
+    axis.text.x         = element_text(angle = 45, hjust = 1),
+    
+    strip.placement     = "outside",
+    strip.background    = element_blank(),
+    strip.text.y.left   = element_text(angle = 0, face = "bold"),
+    strip.text.x        = element_text(face = "bold")
+  )
+
+
+
+
+
+ggsave("/work/vstorozhuk/data/plots/ISM_subcategories.png",
+       plot_ISM1, dpi = 600, width = 15, height = 12)
+
+
+
+```
+
+## ISM subcategories from Flair to manda
+```{r}
+
+#––– Define a named vector for recoding ISM subcategory labels to shorter SQANTI3 names
+recode_sub <- c(
+  "3prime_fragment"   = "3pFrag",
+  "5prime_fragment"   = "5pFrag",
+  "internal_fragment" = "intFrag",
+  "intron_retention"  = "IR"
+)
+
+#––– 1) Summarise per gene × pipeline × subcategory (within ISM only)
+ism_summary <- df_clean %>%
+  filter(
+    pipeline %in% c("flair", "mandalorion"),
+    structural_category == "incomplete-splice_match"
+  ) %>%
+  dplyr::count(
+    species,
+    numeric_threshold,
+    associated_gene,
+    pipeline,
+    subcategory,
+    name = "n_isoforms"
+  ) %>%
+  group_by(species, numeric_threshold, associated_gene, pipeline) %>%
+  slice_max(n_isoforms, with_ties = FALSE) %>%
+  ungroup()
+
+#––– 2) Pivot wide & recode subcategory labels
+ism_wide <- ism_summary %>%
+  dplyr::select(-n_isoforms) %>%
+  pivot_wider(
+    id_cols     = c(species, numeric_threshold, associated_gene),
+    names_from  = pipeline,
+    values_from = subcategory,
+    values_fill = list(subcategory = "None")
+  ) %>%
+  rename(
+    cat_flair_sub       = flair,
+    cat_mandalorion_sub = mandalorion
+  ) %>%
+  mutate(
+    cat_flair_sub       = recode(cat_flair_sub,       !!!recode_sub),
+    cat_mandalorion_sub = recode(cat_mandalorion_sub, !!!recode_sub)
+  )
+
+#––– 3) Count the gene‐level flows of ISM subcategories
+ism_flows <- ism_wide %>%
+  dplyr::count(species, numeric_threshold, cat_flair_sub, cat_mandalorion_sub)
+
+#––– 4) Alluvial plot of ISM subcategory flows (all thresholds & species)
+ism_mapping <- ggplot(ism_flows,
+       aes(axis1 = cat_flair_sub,
+           axis2 = cat_mandalorion_sub,
+           y     = n)) +
+  
+  # coloured flows by FLAIR subcategory
+  geom_alluvium(aes(fill = cat_flair_sub),
+                width = 0.15, alpha = 0.8) +
+  
+  # grey stratum blocks
+  geom_stratum(width = 0.15,
+               fill  = "grey90",
+               color = "black") +
+  
+  # stratum labels just outside each block
+  geom_text(
+    stat = "stratum",
+    aes(
+      label = after_stat(stratum),
+      x     = after_stat(x) + ifelse(after_stat(x) == 1, -0.1, +0.1),
+      hjust = ifelse(after_stat(x) == 1, 1, 0)
+    ),
+    size          = 3,
+    check_overlap = TRUE
+  ) +
+  
+  # keep the axis spacing but remove tick labels
+  scale_x_discrete(
+    limits = c("axis1", "axis2"),
+    expand = expansion(add = 0.3)
+  ) +
+  
+  # facet by species (rows) and numeric_threshold (cols)
+  facet_wrap(
+    ~ species + numeric_threshold,
+    scales   = "free_y",
+    ncol     = 3,
+    labeller = labeller(
+      species       = label_value,
+      numeric_threshold = label_value
+    )
+  ) +
+  
+  labs(
+    title = "Flow of subcategories within Incomplete-Splice Match (ISM)",
+    x     = NULL,
+    y     = NULL,
+    fill  = "ISM Subcategory"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    axis.text.y     = element_blank(),
+    axis.ticks.y    = element_blank(),
+    axis.text.x     = element_blank(),  # hide pipeline names
+    axis.ticks.x    = element_blank()
+  ) +
+  NoLegend()
+
+
+ggsave("/work/vstorozhuk/data/plots/ISM_category_mapping_suppport_full.png",
+       ism_mapping, dpi = 600, width = 25, height = 20)
+```
+
+
+
+
+# NIC
+## Novel in catalogue dissection
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(dplyr)
+library(stringr)
+library(readr)    # for parse_number()
+library(forcats)
+library(ggplot2)
+
+
+all_tables <- read.csv("/work/vstorozhuk/data/iso_pipeline/stats/table_after_filter.csv")
+
+
+# ── 1) Define species lookup ──────────────────────────────────────────────────
+species_lut <- c(
+  Barcode01 = "Homo sapiens",
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+# ── 2) Clean & annotate ──────────────────────────────────────────────────────
+df_clean <- all_tables %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  dplyr::select(-barcode_clean)   # drop the helper column
+
+# ── 3) Summarise counts & percentages ────────────────────────────────────────
+df_summary <- df_clean %>%
+  filter(structural_category == "novel_in_catalog") %>%
+  dplyr::count(species, pipeline, numeric_threshold, subcategory) %>%
+  group_by(species, pipeline, numeric_threshold) %>%
+  mutate(
+    prop = n / sum(n) * 100
+  ) %>%
+  ungroup() %>%
+  # ensure a consistent stacking order (largest slice drawn first → bottom)
+  mutate(
+    subcategory = fct_reorder(subcategory, n, .fun = sum, .desc = TRUE)
+  )
+
+# ── 4) Plot: stacked bar per threshold, faceted by species (rows) & pipeline (cols) ─
+plot_NIC <- ggplot(df_summary,
+       aes(x = numeric_threshold, y = prop, fill = subcategory)) +
+  
+  geom_col(
+    color    = "white",
+    size     = 0.3,
+    position = position_stack(reverse = TRUE)
+  ) +
+  
+  geom_text(
+    aes(label = paste0(n, " (", round(prop,1), "%)")),
+    position = position_stack(vjust = 0.5, reverse = TRUE),
+    size     = 3,
+    color    = "white"
+  ) +
+  
+  labs(
+    x     = "Read threshold",
+    y     = NULL
+  ) +
+  
+  facet_grid(pipeline ~ species, switch = "y") +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    # remove the y-axis text & ticks
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    
+    panel.grid.major.x  = element_blank(),
+    axis.text.x         = element_text(angle = 45, hjust = 1),
+    
+    strip.placement     = "outside",
+    strip.background    = element_blank(),
+    strip.text.y.left   = element_text(angle = 0, face = "bold"),
+    strip.text.x        = element_text(face = "bold")
+  )
+
+
+
+ggsave("/work/vstorozhuk/data/plots/NIC_subcategories.png",
+       plot_NIC, dpi = 600, width = 15, height = 12)
+
+```
+
+## NIC 
+```{r}
+
+#––– Define a named vector for recoding NIC subcategory labels to shorter SQANTI3 names
+recode_sub <- c(
+  "combination_of_known_splicesites"   = "combSS",
+  "intron_retention"                   = "IR",
+  "combination_of_known_junctions"     = "combSJ"
+)
+
+
+#––– 1) Summarise per gene × pipeline × subcategory 
+NIC_summary <- df_clean %>%
+  filter(
+    pipeline %in% c("flair", "mandalorion"),
+    structural_category == "novel_in_catalog"
+  ) %>%
+  dplyr::count(
+    species,
+    numeric_threshold,
+    associated_gene,
+    pipeline,
+    subcategory,
+    name = "n_isoforms"
+  ) %>%
+  group_by(species, numeric_threshold, associated_gene, pipeline) %>%
+  slice_max(n_isoforms, with_ties = FALSE) %>%
+  ungroup()
+
+#––– 2) Pivot wide & recode subcategory labels
+nic_wide <- NIC_summary %>%
+  dplyr::select(-n_isoforms) %>%
+  pivot_wider(
+    id_cols     = c(species, numeric_threshold, associated_gene),
+    names_from  = pipeline,
+    values_from = subcategory,
+    values_fill = list(subcategory = "None")
+  ) %>%
+  rename(
+    cat_flair_sub       = flair,
+    cat_mandalorion_sub = mandalorion
+  ) %>%
+  mutate(
+    cat_flair_sub       = recode(cat_flair_sub,       !!!recode_sub),
+    cat_mandalorion_sub = recode(cat_mandalorion_sub, !!!recode_sub)
+  )
+
+#––– 3) Count the gene‐level flows of NIC subcategories
+nic_flows <- nic_wide %>%
+  dplyr::count(species, numeric_threshold, cat_flair_sub, cat_mandalorion_sub, name = "n")
+
+#––– 4) Alluvial plot of NIC subcategory flows (all thresholds & species)
+library(dplyr)
+library(tidyr)
+library(ggalluvial)
+library(ggplot2)
+
+# 1) make sure all combos exist (with n = 0 where missing)
+full_flows <- nic_flows %>%
+  # define all the species & thresholds you want
+  mutate(
+    species      = factor(species,
+                     levels = c("Callithrix jacchus",
+                                "Homo sapiens",
+                                "Macaca mulatta",
+                                "Pan troglodytes")),
+    numeric_threshold = factor(numeric_threshold,
+                     levels = c("1","2","3"))
+  ) %>%
+  complete(
+    species, numeric_threshold,
+    cat_flair_sub, cat_mandalorion_sub,
+    fill = list(n = 0)
+  )
+
+# 2) plot with drop = FALSE
+nic_mapping <- ggplot(full_flows,
+       aes(axis1 = cat_flair_sub,
+           axis2 = cat_mandalorion_sub,
+           y     = n)) +
+  
+  geom_alluvium(aes(fill = cat_flair_sub),
+                width = 0.15, alpha = 0.8) +
+  geom_stratum(width = 0.15, fill = "grey90", color = "black") +
+  geom_text(
+    stat = "stratum",
+    aes(
+      label = after_stat(stratum),
+      x     = after_stat(x) + ifelse(after_stat(x) == 1, -0.1, +0.1),
+      hjust = ifelse(after_stat(x) == 1, 1, 0)
+    ),
+    size          = 3,
+    check_overlap = TRUE
+  ) +
+  scale_x_discrete(limits = c("axis1", "axis2"),
+                   expand = expansion(add = 0.3)) +
+
+  # here, drop = FALSE preserves empty facets
+  facet_wrap(
+    ~ species + numeric_threshold,
+    scales = "free_y",
+    ncol   = 3,
+    drop   = FALSE,
+    labeller = labeller(
+      species       = label_value,
+      numeric_threshold = label_value
+    )
+  ) +
+
+  labs(
+    title = "Flow of subcategories within Novel-In-Catalog (NIC)",
+    x     = NULL, y = NULL,
+    fill  = "NIC Subcategory"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    axis.text.y     = element_blank(),
+    axis.ticks.y    = element_blank(),
+    axis.text.x     = element_blank(),
+    axis.ticks.x    = element_blank()
+  ) +
+  NoLegend()
+
+
+
+ggsave("/work/vstorozhuk/data/plots/NIC_category_mapping_suppport_full.png",
+       nic_mapping, dpi = 600, width = 25, height = 20)
+```
+
+# NNC
+## NNC dissection
+```{r}
+
+
+all_iso <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+
+# ── 1) Define species lookup ──────────────────────────────────────────────────
+species_lut <- c(
+  Barcode01 = "Homo sapiens",
+  Barcode02 = "Pan troglodytes",
+  Barcode03 = "Macaca mulatta",
+  Barcode04 = "Callithrix jacchus"
+)
+
+# ── 2) Clean & annotate ──────────────────────────────────────────────────────
+df_clean <- all_iso %>%
+  mutate(
+    # strip any suffix (e.g. "_subset_3of6") so we get exactly "BarcodeXX"
+    barcode_clean  = str_remove(barcode, "_.*$"),
+    # map to species
+    species        = recode(barcode_clean, !!!species_lut),
+    # extract just the number from R1/S2/etc.
+    numeric_threshold  = parse_number(read_threshold),
+    # make it an ordered factor "1","2","3"
+    numeric_threshold  = factor(numeric_threshold, levels = 1:3, labels = c("1","2","3"))
+  ) %>%
+  dplyr::select(-barcode_clean)   # drop the helper column
+
+# ── 3) Summarise counts & percentages ────────────────────────────────────────
+df_summary <- df_clean %>%
+  filter(structural_category == "novel_not_in_catalog") %>%
+  dplyr::count(species, pipeline, numeric_threshold, subcategory) %>%
+  group_by(species, pipeline, numeric_threshold) %>%
+  mutate(
+    prop = n / sum(n) * 100
+  ) %>%
+  ungroup() %>%
+  # ensure a consistent stacking order (largest slice drawn first → bottom)
+  mutate(
+    subcategory = fct_reorder(subcategory, n, .fun = sum, .desc = TRUE)
+  )
+
+# ── 4) Plot: stacked bar per threshold, faceted by species (rows) & pipeline (cols) ─
+plot_NNC <- ggplot(df_summary,
+       aes(x = numeric_threshold, y = prop, fill = subcategory)) +
+  
+  geom_col(
+    color    = "white",
+    size     = 0.3,
+    position = position_stack(reverse = TRUE)
+  ) +
+  
+  geom_text(
+    aes(label = paste0(n, " (", round(prop,1), "%)")),
+    position = position_stack(vjust = 0.5, reverse = TRUE),
+    size     = 3,
+    color    = "white"
+  ) +
+  
+  labs(
+    x     = "Read threshold",
+    y     = NULL
+  ) +
+  
+  facet_grid(pipeline ~ species, switch = "y") +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    # remove the y-axis text & ticks
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    
+    panel.grid.major.x  = element_blank(),
+    axis.text.x         = element_text(angle = 45, hjust = 1),
+    
+    strip.placement     = "outside",
+    strip.background    = element_blank(),
+    strip.text.y.left   = element_text(angle = 0, face = "bold"),
+    strip.text.x        = element_text(face = "bold")
+  )
+
+
+
+ggsave("/work/vstorozhuk/data/plots/NNC_subcategories.png",
+       plot_NNC, dpi = 600, width = 15, height = 12)
+
+```
+
+# rna-seq support
+```{r}
+
+
+all_iso <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_from_all_coding.txt")
+
+df_rna2 <- all_iso %>%
+  filter(structural_category == "novel_not_in_catalog") %>%
+  mutate(
+    rna_supported2 = case_when(
+      !is.na(min_cov) & min_cov >= 1 ~ "Supported",
+      TRUE                           ~ "Not supported"
+    )
+  )
+
+# ── 2) Summarise counts & percentages ───────────────────────────────────────
+df_rna2_summary <- df_rna2 %>%
+  count(species, pipeline, numeric_threshold, rna_supported2) %>%
+  group_by(species, pipeline, numeric_threshold) %>%
+  mutate(prop = n / sum(n) * 100) %>%
+  ungroup()
+
+# ── 3) Plot: stacked bar of support by min_cov ───────────────────────────────
+ggplot(df_rna2_summary,
+       aes(x = numeric_threshold, y = prop, fill = rna_supported2)) +
+  geom_col(color = "white", size = 0.3) +
+  geom_text(aes(label = paste0(n, "\n(", round(prop,1), "%)")),
+            position = position_stack(vjust = 0.5),
+            size = 3, color = "white") +
+  scale_fill_manual(
+    values = c("Supported" = "#4daf4a", "Not supported" = "#e41a1c"),
+    name = "RNA-seq\nsupport"
+  ) +
+  labs(
+    x = "Read threshold",
+    y = "Percent of novel_not_in_catalog isoforms",
+    title = "Short-read junction coverage support (min_cov ≥ 1)"
+  ) +
+  facet_grid(pipeline ~ species, switch = "y") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x        = element_text(angle = 45, hjust = 1),
+    strip.placement    = "outside",
+    strip.background   = element_blank(),
+    strip.text.y.left  = element_text(angle = 0, face = "bold"),
+    strip.text.x       = element_text(face = "bold")
+  )
+
+```
+
+
+
+
+# GO for NNC
+```{r}
+#––– Libraries
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(dplyr)
+
+mal_gtf <- rtracklayer::readGFF("/work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic_standardized.gtf")
+
+x <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode02/Barcode02_mandalorion_R2_sqanti_report/isoforms_classification.txt")
+
+x_fil <- x %>% filter(structural_category == "novel_not_in_catalog",coding == "coding", RTS_stage != TRUE, subcategory == "at_least_one_novel_splicesite", predicted_NMD != TRUE)
+
+selected_nnc <- x_fil %>% dplyr::select(associated_gene, isoform)
+
+
+####
+key <- mal_gtf %>% dplyr::select(gene_id) 
+selected_nnc %<>% left_join(key, by = c("associated_gene" = "gene_id"))
+
+##
+
+
+selected_genes <- selected_nnc$associated_gene  %>% unique()
+universe <- x %>% filter(coding == "coding", RTS_stage != TRUE, predicted_NMD != TRUE) %>% pull(associated_gene) %>% unique()
+####
+
+  
+#––– 1. Map SYMBOL -> ENTREZID
+gene_df <- bitr(selected_genes,
+                fromType   = "SYMBOL",
+                toType     = "ENTREZID",
+                OrgDb       = org.Hs.eg.db)
+entrez_ids <- gene_df$ENTREZID
+
+#––– 2. Run enrichments
+ego_bp <- enrichGO(gene          = entrez_ids,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "BP",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.5,
+                   qvalueCutoff  = 0.5,
+                   readable      = TRUE)
+
+ego_cc <- enrichGO(gene          = entrez_ids,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "CC",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.5,
+                   qvalueCutoff  = 0.5,
+                   readable      = TRUE)
+
+ego_mf <- enrichGO(gene          = entrez_ids,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "MF",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.5,
+                   qvalueCutoff  = 0.5,
+                   readable      = TRUE)
+
+ekegg <- enrichKEGG(gene         = entrez_ids,
+                    organism     = "hsa",
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = 0.5,
+                    qvalueCutoff  = 0.5)
+# make KEGG readable
+ekegg <- setReadable(ekegg, OrgDb=org.Hs.eg.db, keyType="ENTREZID")
+
+#––– 3. Combine & select top 5 per category
+bp_df   <- as.data.frame(ego_bp)   %>% mutate(Category="GO:BP")
+cc_df   <- as.data.frame(ego_cc)   %>% mutate(Category="GO:CC")
+mf_df   <- as.data.frame(ego_mf)   %>% mutate(Category="GO:MF")
+kegg_df <- as.data.frame(ekegg)    %>% mutate(Category="KEGG")
+
+all_df <- bind_rows(bp_df, cc_df, mf_df, kegg_df)
+
+top5 <- all_df %>%
+  group_by(Category) %>%
+  arrange(qvalue) %>%
+  slice(1:5) %>%
+  ungroup() %>%
+  # compute the bar‐length metric and order each facet
+  mutate(enrichment = -log10(qvalue),
+         Description = factor(Description,
+                              levels=rev(unique(Description))))
+
+#––– 4. Plot
+ggplot(top5, aes(x=enrichment, y=Description)) +
+  geom_col(fill="steelblue") +
+  facet_grid(Category ~ ., scales="free_y", space="free") +
+  labs(title="Pathway Enrichments",
+       x = "-log10(q-value)",
+       y = NULL) +
+  theme_bw() +
+  theme(strip.background = element_rect(fill="grey90"),
+        strip.text.y = element_text(angle=0),
+        panel.grid.major.y = element_blank())
+```
+
+
+```{r}
+
+
+mal_gtf <- rtracklayer::readGFF("/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf")
+
+x <- read.delim("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode04/Barcode04_mandalorion_R2_sqanti_report/isoforms_classification.txt")
+
+x_fil <- x %>% filter(structural_category == "novel_not_in_catalog",coding == "coding", RTS_stage != TRUE, subcategory == "at_least_one_novel_splicesite", predicted_NMD != TRUE)
+
+selected_nnc <- x_fil %>% dplyr::select(associated_gene, isoform)
+
+
+####
+key <- mal_gtf %>% dplyr::select(gene_id) 
+selected_nnc %<>% left_join(key, by = c("associated_gene" = "gene_id"))
+
+##
+
+selected_genes <- selected_nnc$associated_gene  %>% unique()
+universe <- x %>% filter(coding == "coding", RTS_stage != TRUE, predicted_NMD != TRUE) %>% pull(associated_gene) %>% unique()
+
+
+#––– 0. Define gene lists as SYMBOLs
+selected_genes <- selected_nnc$associated_gene  %>% unique()
+universe       <- x %>% 
+  filter(coding == "coding", RTS_stage != TRUE, predicted_NMD != TRUE) %>% 
+  pull(associated_gene) %>% 
+  unique()
+
+#––– 1. Map SYMBOL -> ENTREZID for both selected_genes and universe
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+
+# map selected genes
+gene_df <- bitr(selected_genes,
+                fromType   = "SYMBOL",
+                toType     = "ENTREZID",
+                OrgDb      = org.Hs.eg.db)
+entrez_ids        <- gene_df$ENTREZID
+
+# map universe
+universe_df <- bitr(universe,
+                    fromType   = "SYMBOL",
+                    toType     = "ENTREZID",
+                    OrgDb      = org.Hs.eg.db)
+universe_entrez  <- universe_df$ENTREZID
+
+#––– 2. Run enrichments WITH universe parameter
+ego_bp <- enrichGO(gene          = entrez_ids,
+                   universe      = universe_entrez,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "BP",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.1,
+                   qvalueCutoff  = 0.1,
+                   readable      = TRUE)
+
+ego_cc <- enrichGO(gene          = entrez_ids,
+                   universe      = universe_entrez,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "CC",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.1,
+                   qvalueCutoff  = 0.1,
+                   readable      = TRUE)
+
+ego_mf <- enrichGO(gene          = entrez_ids,
+                   universe      = universe_entrez,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "MF",
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.1,
+                   qvalueCutoff  = 0.1,
+                   readable      = TRUE)
+
+ekegg <- enrichKEGG(gene           = entrez_ids,
+                    universe       = universe_entrez,
+                    organism       = "hsa",
+                    pAdjustMethod  = "BH",
+                    pvalueCutoff   = 0.1,
+                    qvalueCutoff   = 0.1)
+
+# make KEGG readable
+ekegg <- setReadable(ekegg, OrgDb=org.Hs.eg.db, keyType="ENTREZID")
+
+#––– 3. Combine & select top 5 per category
+bp_df   <- as.data.frame(ego_bp)   %>% mutate(Category="GO:BP")
+cc_df   <- as.data.frame(ego_cc)   %>% mutate(Category="GO:CC")
+mf_df   <- as.data.frame(ego_mf)   %>% mutate(Category="GO:MF")
+kegg_df <- as.data.frame(ekegg)    %>% mutate(Category="KEGG")
+
+all_df <- bind_rows(bp_df, cc_df, mf_df, kegg_df)
+
+top5 <- all_df %>%
+  group_by(Category) %>%
+  arrange(qvalue) %>%
+  slice(1:5) %>%
+  ungroup() %>%
+  # compute the bar‐length metric and order each facet
+  mutate(enrichment = -log10(qvalue),
+         Description = factor(Description,
+                              levels=rev(unique(Description))))
+
+#––– 4. Plot
+library(ggplot2)
+ggplot(top5, aes(x=enrichment, y=Description)) +
+  geom_col(fill="steelblue") +
+  facet_grid(Category ~ ., scales="free_y", space="free") +
+  labs(title="Pathway Enrichments",
+       x = "-log10(q-value)",
+       y = NULL) +
+  theme_bw() +
+  theme(strip.background = element_rect(fill="grey90"),
+        strip.text.y     = element_text(angle=0),
+        panel.grid.major.y = element_blank())
+```
+
+

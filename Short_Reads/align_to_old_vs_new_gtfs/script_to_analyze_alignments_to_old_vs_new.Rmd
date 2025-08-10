@@ -1,0 +1,290 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-08-10"
+---
+
+# custom vs default
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggrepel)
+library(glue)
+library(purrr)
+
+use_col <- "unstranded"
+
+# ---------- PanTro ----------
+pt_def <- readr::read_tsv(
+  "/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/aligned_default_single/ReadsPerGene.out.tab",
+  col_names = c("gene","unstranded","stranded_forward","stranded_reverse"),
+  col_types = cols(gene = col_character(),
+                   unstranded = col_double(),
+                   stranded_forward = col_double(),
+                   stranded_reverse = col_double())
+) %>% filter(!startsWith(gene, "N_")) %>% transmute(gene, count_default = .data[[use_col]])
+
+pt_cus <- readr::read_tsv(
+  "/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/aligned_custom_single/ReadsPerGene.out.tab",
+  col_names = c("gene","unstranded","stranded_forward","stranded_reverse"),
+  col_types = cols(gene = col_character(),
+                   unstranded = col_double(),
+                   stranded_forward = col_double(),
+                   stranded_reverse = col_double())
+) %>% filter(!startsWith(gene, "N_")) %>% transmute(gene, count_custom = .data[[use_col]])
+
+pt <- full_join(pt_def, pt_cus, by = "gene") %>%
+  mutate(count_default = replace_na(count_default, 0),
+         count_custom  = replace_na(count_custom, 0))
+
+pt_changed <- pt %>%
+  filter(count_default == 0 & count_custom > 0 |
+         count_default > 0 & count_custom == 0 |
+         count_default != count_custom) %>%
+  mutate(change_type = case_when(
+    count_default == 0 & count_custom > 0 ~ "novel",
+    count_default > 0 & count_custom == 0 ~ "lost",
+    TRUE ~ "changed"
+  ))
+
+p1 <- ggplot(pt, aes(log10(count_default + 1), log10(count_custom + 1))) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2) +
+  geom_point(alpha = 0.35, size = 1) +
+  geom_point(data = pt_changed, aes(color = change_type), size = 1.5) +
+  geom_text_repel(data = pt_changed, aes(label = gene, color = change_type),
+                  size = 2.5, max.overlaps = 20) +
+  scale_color_manual(values = c(novel = "#1B9E77", lost = "#D95F02", changed = "#7570B3")) +
+  labs(title = "PanTro", x = "log10(default+1)", y = "log10(custom+1)", color = "") +
+  theme_bw()
+
+pt_stats <- tibble(
+  species   = "PanTro",
+  rescued   = sum(pt$count_default == 0 & pt$count_custom > 0),
+  lost      = sum(pt$count_default > 0 & pt$count_custom == 0),
+  changed   = sum(pt$count_default != pt$count_custom),
+  unchanged = sum(pt$count_default == pt$count_custom),
+  total     = nrow(pt)
+)
+
+# ---------- RheMac ----------
+rm_def <- readr::read_tsv(
+  "/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/aligned_default_single/ReadsPerGene.out.tab",
+  col_names = c("gene","unstranded","stranded_forward","stranded_reverse"),
+  col_types = cols(gene = col_character(),
+                   unstranded = col_double(),
+                   stranded_forward = col_double(),
+                   stranded_reverse = col_double())
+) %>% filter(!startsWith(gene, "N_")) %>% transmute(gene, count_default = .data[[use_col]])
+
+rm_cus <- readr::read_tsv(
+  "/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/aligned_custom_single/ReadsPerGene.out.tab",
+  col_names = c("gene","unstranded","stranded_forward","stranded_reverse"),
+  col_types = cols(gene = col_character(),
+                   unstranded = col_double(),
+                   stranded_forward = col_double(),
+                   stranded_reverse = col_double())
+) %>% filter(!startsWith(gene, "N_")) %>% transmute(gene, count_custom = .data[[use_col]])
+
+rm <- full_join(rm_def, rm_cus, by = "gene") %>%
+  mutate(count_default = replace_na(count_default, 0),
+         count_custom  = replace_na(count_custom, 0))
+
+rm_changed <- rm %>%
+  filter(count_default == 0 & count_custom > 0 |
+         count_default > 0 & count_custom == 0 |
+         count_default != count_custom) %>%
+  mutate(change_type = case_when(
+    count_default == 0 & count_custom > 0 ~ "novel",
+    count_default > 0 & count_custom == 0 ~ "lost",
+    TRUE ~ "changed"
+  ))
+
+p2 <- ggplot(rm, aes(log10(count_default + 1), log10(count_custom + 1))) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2) +
+  geom_point(alpha = 0.35, size = 1) +
+  geom_point(data = rm_changed, aes(color = change_type), size = 1.5) +
+  geom_text_repel(data = rm_changed, aes(label = gene, color = change_type),
+                  size = 2.5, max.overlaps = 20) +
+  scale_color_manual(values = c(novel = "#1B9E77", lost = "#D95F02", changed = "#7570B3")) +
+  labs(title = "RheMac", x = "log10(default+1)", y = "log10(custom+1)", color = "") +
+  theme_bw()
+
+rm_stats <- tibble(
+  species   = "RheMac",
+  rescued   = sum(rm$count_default == 0 & rm$count_custom > 0),
+  lost      = sum(rm$count_default > 0 & rm$count_custom == 0),
+  changed   = sum(rm$count_default != rm$count_custom),
+  unchanged = sum(rm$count_default == rm$count_custom),
+  total     = nrow(rm)
+)
+
+# ---------- CalJac ----------
+cj_def <- readr::read_tsv(
+  "/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/aligned_default_single/ReadsPerGene.out.tab",
+  col_names = c("gene","unstranded","stranded_forward","stranded_reverse"),
+  col_types = cols(gene = col_character(),
+                   unstranded = col_double(),
+                   stranded_forward = col_double(),
+                   stranded_reverse = col_double())
+) %>% filter(!startsWith(gene, "N_")) %>% transmute(gene, count_default = .data[[use_col]])
+
+cj_cus <- readr::read_tsv(
+  "/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/aligned_custom_single/ReadsPerGene.out.tab",
+  col_names = c("gene","unstranded","stranded_forward","stranded_reverse"),
+  col_types = cols(gene = col_character(),
+                   unstranded = col_double(),
+                   stranded_forward = col_double(),
+                   stranded_reverse = col_double())
+) %>% filter(!startsWith(gene, "N_")) %>% transmute(gene, count_custom = .data[[use_col]])
+
+cj <- full_join(cj_def, cj_cus, by = "gene") %>%
+  mutate(count_default = replace_na(count_default, 0),
+         count_custom  = replace_na(count_custom, 0))
+
+cj_changed <- cj %>%
+  filter(count_default == 0 & count_custom > 0 |
+         count_default > 0 & count_custom == 0 |
+         count_default != count_custom) %>%
+  mutate(change_type = case_when(
+    count_default == 0 & count_custom > 0 ~ "novel",
+    count_default > 0 & count_custom == 0 ~ "lost",
+    TRUE ~ "changed"
+  ))
+
+p3 <- ggplot(cj, aes(log10(count_default + 1), log10(count_custom + 1))) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2) +
+  geom_point(alpha = 0.35, size = 1) +
+  geom_point(data = cj_changed, aes(color = change_type), size = 1.5) +
+  geom_text_repel(data = cj_changed, aes(label = gene, color = change_type),
+                  size = 2.5, max.overlaps = 20) +
+  scale_color_manual(values = c(novel = "#1B9E77", lost = "#D95F02", changed = "#7570B3")) +
+  labs(title = "CalJac", x = "log10(default+1)", y = "log10(custom+1)", color = "") +
+  theme_bw()
+
+cj_stats <- tibble(
+  species   = "CalJac",
+  novel   = sum(cj$count_default == 0 & cj$count_custom > 0),
+  lost      = sum(cj$count_default > 0 & cj$count_custom == 0),
+  changed   = sum(cj$count_default != cj$count_custom),
+  unchanged = sum(cj$count_default == cj$count_custom),
+  total     = nrow(cj)
+)
+
+
+(p1 | p2 | p3)
+
+summary_tbl <- bind_rows(pt_stats, rm_stats, cj_stats)
+print(summary_tbl)
+
+```
+
+
+# MA plots
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+
+pseudo <- 0.1
+eps <- 1e-12  # tiny tolerance for "change > 0"
+
+## ---------- PanTro ----------
+lib_def_pt <- sum(pt$count_default, na.rm = TRUE)
+lib_cus_pt <- sum(pt$count_custom,  na.rm = TRUE)
+
+pt_ma <- pt %>%
+  mutate(
+    cpm_default = 1e6 * count_default / lib_def_pt,
+    cpm_custom  = 1e6 * count_custom  / lib_cus_pt,
+    cpm_mean    = (cpm_default + cpm_custom) / 2,
+    log2_ratio  = log2((cpm_custom + pseudo) / (cpm_default + pseudo)),
+    changed     = abs(log2_ratio) > eps
+  )
+
+pt_hi <- pt_ma %>%
+  arrange(desc(abs(log2_ratio))) %>%
+  slice_head(n = 20)
+
+p_pt_ma <- ggplot(pt_ma %>% filter(cpm_mean > 0), aes(x = cpm_mean, y = log2_ratio)) +
+  geom_hline(yintercept = 0, linetype = 2, color = "grey60") +
+  geom_point(aes(color = changed), shape = 16, alpha = 0.35, size = 1) +
+  geom_point(data = pt_hi, shape = 21, size = 2, color = "red", fill = NA) +
+  geom_text_repel(data = pt_hi, aes(label = gene), size = 3, max.overlaps = 100) +
+  scale_color_manual(values = c(`FALSE` = "grey70", `TRUE` = "steelblue")) +
+  scale_x_log10(breaks = c(1, 10, 100)) +
+  coord_cartesian(ylim = c(-4, 4)) +
+  labs(x = "CPM", y = expression(log[2]~"(Custom/Default)"), title = "PanTro") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none")
+
+## ---------- RheMac ----------
+lib_def_rm <- sum(rm$count_default, na.rm = TRUE)
+lib_cus_rm <- sum(rm$count_custom,  na.rm = TRUE)
+
+rm_ma <- rm %>%
+  mutate(
+    cpm_default = 1e6 * count_default / lib_def_rm,
+    cpm_custom  = 1e6 * count_custom  / lib_cus_rm,
+    cpm_mean    = (cpm_default + cpm_custom) / 2,
+    log2_ratio  = log2((cpm_custom + pseudo) / (cpm_default + pseudo)),
+    changed     = abs(log2_ratio) > eps
+  )
+
+rm_hi <- rm_ma %>%
+  arrange(desc(abs(log2_ratio))) %>%
+  slice_head(n = 20)
+
+p_rm_ma <- ggplot(rm_ma %>% filter(cpm_mean > 0), aes(x = cpm_mean, y = log2_ratio)) +
+  geom_hline(yintercept = 0, linetype = 2, color = "grey60") +
+  geom_point(aes(color = changed), shape = 16, alpha = 0.35, size = 1) +
+  geom_point(data = rm_hi, shape = 21, size = 2, color = "red", fill = NA) +
+  geom_text_repel(data = rm_hi, aes(label = gene), size = 3, max.overlaps = 100) +
+  scale_color_manual(values = c(`FALSE` = "grey70", `TRUE` = "steelblue")) +
+  scale_x_log10(breaks = c(1, 10, 100)) +
+  coord_cartesian(ylim = c(-4, 4)) +
+  labs(x = "CPM", y = expression(log[2]~"(Custom/Default)"), title = "RheMac") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none")
+
+## ---------- CalJac ----------
+lib_def_cj <- sum(cj$count_default, na.rm = TRUE)
+lib_cus_cj <- sum(cj$count_custom,  na.rm = TRUE)
+
+cj_ma <- cj %>%
+  mutate(
+    cpm_default = 1e6 * count_default / lib_def_cj,
+    cpm_custom  = 1e6 * count_custom  / lib_cus_cj,
+    cpm_mean    = (cpm_default + cpm_custom) / 2,
+    log2_ratio  = log2((cpm_custom + pseudo) / (cpm_default + pseudo)),
+    changed     = abs(log2_ratio) > eps
+  )
+
+cj_hi <- cj_ma %>%
+  arrange(desc(abs(log2_ratio))) %>%
+  slice_head(n = 20)
+
+p_cj_ma <- ggplot(cj_ma %>% filter(cpm_mean > 0), aes(x = cpm_mean, y = log2_ratio)) +
+  geom_hline(yintercept = 0, linetype = 2, color = "grey60") +
+  geom_point(aes(color = changed), shape = 16, alpha = 0.35, size = 1) +
+  geom_point(data = cj_hi, shape = 21, size = 2, color = "red", fill = NA) +
+  geom_text_repel(data = cj_hi, aes(label = gene), size = 3, max.overlaps = 100) +
+  scale_color_manual(values = c(`FALSE` = "grey70", `TRUE` = "steelblue")) +
+  scale_x_log10(breaks = c(1, 10, 100)) +
+  coord_cartesian(ylim = c(-4, 4)) +
+  labs(x = "CPM", y = expression(log[2]~"(Custom/Default)"), title = "CalJac") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none")
+
+## ---------- Patchwork ----------
+(p_pt_ma | p_rm_ma | p_cj_ma)
+
+```
+
+
+
+
+
+

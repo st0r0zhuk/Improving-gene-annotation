@@ -107,7 +107,6 @@ agat_sp_fix_features_locations_duplicated.pl \
 
 ```
 
-
 ```{bash}
 
 agat_convert_sp_gff2gtf.pl \

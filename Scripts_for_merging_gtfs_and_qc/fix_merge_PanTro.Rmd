@@ -1,0 +1,208 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-08-09"
+---
+
+
+# merge
+```{r}
+all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_support2.txt")
+all_tables %<>% filter(structural_category != "fusion")
+
+barcode01_manda <- all_tables %>% filter(Species == "Pan troglodytes", pipeline == "MANDALORION") %>% dplyr::select(isoform, structural_category, subcategory, Isoform_N_reads, within_CAGE_peak, dist_to_CAGE_peak)
+
+gtf_manda <- fread("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode02/Barcode02_mandalorion_R2_sqanti_filter/isoforms.filtered.gtf",
+            sep = "\t",
+            header = FALSE,
+            quote = "",
+            fill = TRUE)
+
+gtf_manda %<>% as.data.frame()
+
+
+gtf_mandalorion_filtered <- gtf_manda %>%
+  as.data.frame() %>%
+  # 1. extract transcript_id & gene_id
+  mutate(
+    transcript_id = str_extract(V9, '(?<=transcript_id ")[^"]+'),
+    gene_id       = str_extract(V9, '(?<=gene_id ")[^"]+'),
+    gene_id = if_else(
+      str_detect(gene_id, '^[0-9]+$'),
+      paste0("Novel_", gene_id),
+      gene_id
+    ),
+    V9 = str_replace(
+      V9,
+      '(?<=gene_id ")[^"]+(?=";)',
+      gene_id
+    )
+  ) %>%
+  # 2. filter to only the isoforms you care about
+  filter(transcript_id %in% barcode01_manda$isoform) %>%
+  # 3. join in all the extra stats columns
+  left_join(barcode01_manda, by = c("transcript_id" = "isoform")) %>%
+  # 4. explicitly tack each one onto V9
+  mutate(
+    V9 = paste0(
+      V9,
+      sprintf(';structural_category "%s"',       structural_category),
+      sprintf(';subcategory "%s"',               subcategory),
+      sprintf(';Isoform_N_reads "%s"',           Isoform_N_reads),
+      sprintf(';within_CAGE_peak "%s"',          within_CAGE_peak),
+      sprintf(';dist_to_CAGE_peak "%s"',         dist_to_CAGE_peak)
+    )
+  ) %>%
+  # 5. drop the extras so you’re back to 9 columns
+  dplyr::select(V1:V9)
+
+gtf_mandalorion_filtered$V2 <- "MANDALORION"
+
+write.table(
+  gtf_mandalorion_filtered,
+  file = "/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/PanTro_intermediate/gtf_mandalorion_filtered.gtf",
+  sep = "\t",
+  quote = FALSE,
+  col.names = FALSE,
+  row.names = FALSE
+)
+
+```
+
+
+```{bash}
+mamba activate agat_env
+
+agat_convert_sp_gff2gtf.pl \
+  --in /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/PanTro_intermediate/gtf_mandalorion_filtered.gtf \
+  --gtf_version 3 \
+  -o /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/PanTro_intermediate/mandalorion_s2_isoforms.filtered.fixed_agat.gtf
+
+```
+
+```{r}
+mamba activate agat_env
+
+# Reference
+agat_convert_sp_gxf2gxf.pl \
+  --gff /work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic_standardized.gtf \
+  -o ref.std.gff3
+
+
+# Long-read isoforms 
+agat_convert_sp_gxf2gxf.pl \
+  --gff mandalorion_s2_isoforms.filtered.fixed_agat.gtf \
+  -o lr.std.gff3
+```
+
+```{bash}
+grep -h -v '^#' ref.std.gff3 lr.std.gff3 > combined.gff3
+
+agat_sp_fix_features_locations_duplicated.pl \
+  --gff combined.gff3 \
+  --model 1,3 \
+  -o merged.with_isoforms.gff3
+
+```
+
+```{bash}
+
+agat_convert_sp_gff2gtf.pl \
+  --in merged.with_isoforms.gff3 \
+  --gtf_version 3 \
+  -o merged.with_isoforms.gtf
+
+```
+
+```{r}
+
+library(dplyr)
+library(GenomicRanges)
+library(IRanges)
+library(rtracklayer)
+
+merged <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/PanTro_intermediate/merged.with_isoforms.gtf")
+merged %<>% as.data.frame()
+to_fix <- merged
+
+
+# Find dominant transcript per gene
+dom_map <- to_fix %>%
+  group_by(gene_id) %>%
+  summarise(
+    dominant_tx = {
+      vals <- isoform_N_reads
+      if (all(is.na(vals))) NA_character_ else {
+        idx <- which(vals == max(vals, na.rm = TRUE))
+        transcript_id[idx[1]]
+      }
+    },
+    has_reads = !all(is.na(isoform_N_reads)),
+    .groups = "drop"
+  )
+
+# Join and assign Dominant
+to_fix <- to_fix %>%
+  left_join(dom_map, by = "gene_id") %>%
+  mutate(
+    Dominant = case_when(
+      !has_reads ~ NA,                                     # no isoform_N_reads for this gene
+      type != "transcript" ~ NA,                           # not a transcript row
+      transcript_id == dominant_tx ~ TRUE,                 # dominant transcript
+      TRUE ~ FALSE                                          # other transcript
+    )
+  ) %>%
+  dplyr::select(-dominant_tx, -has_reads)
+
+
+
+library(dplyr)
+
+tail_cols <- c(
+  "structural_category", "subcategory", "within_CAGE_peak",
+  "dist_to_CAGE_peak", "isoform_N_reads", "Dominant",
+  "anticodon", "part", "gene_synonym", "standard_name"
+)
+
+to_fix <- to_fix %>% relocate(any_of(tail_cols), .after = last_col())
+
+#####
+
+df <- to_fix %>%
+  mutate(
+    # GRanges uses "*" for unknown; GTF uses "."
+    strand = ifelse(strand == ".", "*", strand),
+    # Keep score/phase types tidy
+    score  = suppressWarnings(as.numeric(score)),
+    phase  = suppressWarnings(as.integer(phase)),
+    # GTF attributes are strings; make booleans explicit
+    Dominant = case_when(
+      is.na(Dominant) ~ NA_character_,
+      Dominant ~ "TRUE",
+      TRUE ~ "FALSE"
+    )
+  )
+
+# Build GRanges
+gr <- GRanges(
+  seqnames = df$seqid,
+  ranges   = IRanges(start = df$start, end = df$end),
+  strand   = df$strand
+)
+
+# Put everything else into mcols (these become GTF columns/attributes)
+# Avoid reserved GRanges column names
+reserved <- c("seqnames","ranges","strand","seqlevels","seqlengths","isCircular",
+              "start","end","width","element","seqid")  # plus the three used above
+
+mcols(gr) <- df %>%
+  dplyr::select(-all_of(c("seqid","start","end","strand"))) %>%
+  # Ensure plain atomic vectors (no lists)
+  mutate(across(everything(), ~ if (is.list(.)) vapply(., toString, "") else .))
+
+# Write GTF
+export(gr, "/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/PanTro_intermediate/mPanTro3_extended.gtf", format = "gtf")
+```
+
+
+

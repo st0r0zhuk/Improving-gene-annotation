@@ -6,32 +6,32 @@ sqanti3_path: "~/Mandalorion_notes/sqanti3/release_sqanti3"
 
 ######################## Input / Output Dirs  ######################## 
 
-input_dir: "/work/vstorozhuk/export_to_git/Nanopore_Reads"
-output_dir: "/work/vstorozhuk/export_to_git/Snakemake_to_reconstruct_isoforms/Output"
+input_dir: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs"
+output_dir: "/work/vstorozhuk/data/iso_pipeline/pipeline_outputs"
 
 ######################## References ########################
 
 references:
   GRCh38:
-    reference_fasta: "/work/vstorozhuk/export_to_git/Input_Annotations/GRCh38.p14.genome.fa"
-    reference_gtf:   "/work/vstorozhuk/export_to_git/Input_Annotations/GRCh38_v47.gtf"
+    reference_fasta: "/work/vstorozhuk/data/reference/Homo_sapiens.GRCh38.dna_sm.toplevel.fa"
+    reference_gtf:   "/work/vstorozhuk/data/reference/Homo_sapiens.GRCh38.114.gtf"
 
   PanTro3:
-    reference_fasta: "/work/vstorozhuk/export_to_git/Input_Annotations/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.fa"
-    reference_gtf:   "/work/vstorozhuk/export_to_git/Input_Annotations/mPanTro3_GCF_028858775.2_genomic_standardized.gtf"
+    reference_fasta: "/work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.fna"
+    reference_gtf:   "/work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic_standardized.gtf"
 
   Mmul10:
-    reference_fasta: "/work/vstorozhuk/export_to_git/Input_Annotations/Macaca_mulatta.Mmul_10.dna_sm.toplevel.fa"
-    reference_gtf:   "/work/vstorozhuk/export_to_git/Input_Annotations/Mmul_10_standardized.gtf"
+    reference_fasta: "/work/vstorozhuk/data/reference/GCF_003339765.1_Mmul_10_genomic.fna"
+    reference_gtf:   "/work/vstorozhuk/data/reference/GCF_003339765.1_Mmul_10_genomic_standardized.gtf"
     
   CalJac1:
-    reference_fasta: "/work/vstorozhuk/export_to_git/Input_Annotations/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna"
-    reference_gtf:   "/work/vstorozhuk/export_to_git/Input_Annotations/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf"
+    reference_fasta: "/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna"
+    reference_gtf:   "/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf"
 
 ######################## C3POa / trimming ########################
 
-splint: "/work/vstorozhuk/export_to_git/Snakemake_to_reconstruct_isoforms/splint.fasta"
-adapters: "/work/vstorozhuk/export_to_git/Snakemake_to_reconstruct_isoforms/PNAS2018_adapters.fasta"
+splint: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs/splint.fasta"
+adapters: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs/PNAS2018_adapters.fasta"
 trim: "33,21"
 
 ######################## Samples ######################## 
@@ -47,16 +47,17 @@ samples:
     reference: "CalJac1"
 
 ######################## RnaSeq fofn ######################## 
-
+ 
 rna_fofn:
    Barcode02: "/work/vstorozhuk/data/rna_seq_for_alignment/PanTro3/PanTro.fofn"
    Barcode03: "/work/vstorozhuk/data/rna_seq_for_alignment/Mmul10/MMul.fofn"
    Barcode04: "/work/vstorozhuk/data/rna_seq_for_alignment/CalJac4/CalJac.fofn"
      
  
-# ######################## CAGE ######################## 
+######################### CAGE ######################## 
 
 cage_peaks:
    Barcode02: "/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_PanTro3_coords.bed"
    Barcode03: "/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_RheMac10_RefSeq_coords.bed"
    Barcode04: "/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_caljac1.2_coords.bed"
+    

@@ -1,0 +1,213 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-08-03"
+---
+
+
+
+
+
+```{bash}
+# Get latest STAR source from releases
+wget https://github.com/alexdobin/STAR/archive/2.7.11b.tar.gz
+tar -xzf 2.7.11b.tar.gz
+cd STAR-2.7.11b
+
+make STAR
+```
+
+# CalJAc
+
+## rna seq
+```{bash}
+
+cd //work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac
+prefetch SRR7134953
+fasterq-dump SRR7134953/SRR7134953.sra
+
+```
+
+## Align reference calJAc4
+```{r}
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/star_default_caljac
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 30 \
+     --runMode genomeGenerate \
+     --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/star_align/star_default_caljac \
+     --genomeFastaFiles /work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna \
+     --sjdbGTFfile /work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf \
+     --sjdbOverhang 100
+
+cd /work/vstorozhuk/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/aligned_default_single
+
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+  --runThreadN 20 \
+  --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/star_default_caljac \
+  --readFilesIn /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/SRR7134953.fastq \
+  --sjdbGTFfile /work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf \
+  --quantMode GeneCounts \
+  --outSAMtype None
+
+```
+
+## Align custom ref calJAc4
+```{r}
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/star_custom_caljac
+  
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 30 \
+     --runMode genomeGenerate \
+     --genomeDir/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/star_custom_caljac \
+     --genomeFastaFiles /work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna \
+     --sjdbGTFfile /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/mCalJac1.2_extended.gtf \
+     --sjdbOverhang 100
+
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/aligned_custom_single
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 20 \
+     --genomeDir/work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/star_custom_caljac \
+     --readFilesIn /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/CalJac/SRR7134953.fastq \
+     --sjdbGTFfile /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/mCalJac1.2_extended.gtf \
+     --quantMode GeneCounts \
+     --outSAMtype None
+
+```
+
+
+# RheMac
+
+## rna seq
+```{bash}
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac
+conda activate sratoolkit
+prefetch SRR945361
+fasterq-dump SRR945361/SRR945361.sra
+
+```
+
+## Align reference RheMac
+```{bash}
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/star_default_rhemac
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 30 \
+     --runMode genomeGenerate \
+     --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/star_default_rhemac \
+     --genomeFastaFiles /work/vstorozhuk/data/reference/GCF_003339765.1_Mmul_10_genomic.fna \
+     --sjdbGTFfile /work/vstorozhuk/data/reference/GCF_003339765.1_Mmul_10_genomic_standardized.gtf \
+     --sjdbOverhang 100
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/aligned_default_single
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+  --runThreadN 20 \
+  --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/star_default_rhemac \
+  --readFilesIn /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/SRR945361.fastq \
+  --sjdbGTFfile /work/vstorozhuk/data/reference/GCF_003339765.1_Mmul_10_genomic_standardized.gtf \
+  --quantMode GeneCounts \
+  --outSAMtype None
+
+```
+
+## Align custom ref RheMac
+```{bash}
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/star_custom_rhemac
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 30 \
+     --runMode genomeGenerate \
+     --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/star_custom_rhemac \
+     --genomeFastaFiles /work/vstorozhuk/data/reference/GCF_003339765.1_Mmul_10_genomic.fna \
+     --sjdbGTFfile /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/RheMac_intermediate/RheMac10_extended.gtf \
+     --sjdbOverhang 100
+
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/aligned_custom_single
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 20 \
+     --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/star_custom_rhemac \
+     --readFilesIn /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/RheMac/SRR945361.fastq \
+     --sjdbGTFfile /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/RheMac_intermediate/RheMac10_extended.gtf \
+     --quantMode GeneCounts \
+     --outSAMtype None
+
+```
+
+
+
+# PanTro
+
+## rna seq
+```{r}
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro
+conda activate sratoolkit
+prefetch SRR945299
+fasterq-dump SRR945299/SRR945299.sra
+
+```
+
+## Align reference PanTro
+```{r}
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/star_default_pantro
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 30 \
+     --runMode genomeGenerate \
+     --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/star_default_pantro \
+     --genomeFastaFiles /work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.fna \
+     --sjdbGTFfile /work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic_standardized.gtf \
+     --sjdbOverhang 100
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/aligned_default_single
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+  --runThreadN 20 \
+  --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/star_default_pantro \
+  --readFilesIn /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/SRR945299.fastq \
+  --sjdbGTFfile /work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic_standardized.gtf \
+  --quantMode GeneCounts \
+  --outSAMtype None
+
+```
+
+## Align custom ref PanTro
+```{r}
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/star_custom_pantro
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 30 \
+     --runMode genomeGenerate \
+     --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/star_custom_pantro \
+     --genomeFastaFiles /work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.fna \
+     --sjdbGTFfile /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/PanTro_intermediate/mPanTro3_extended.gtf \
+     --sjdbOverhang 100
+
+
+cd /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/aligned_custom_single
+
+/work/vstorozhuk/other/STAR-2.7.11b/source/STAR \
+     --runThreadN 20 \
+     --genomeDir /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/star_custom_pantro \
+     --readFilesIn /work/vstorozhuk/export_to_git/Short_Reads/align_to_old_vs_new_gtfs/PanTro/SRR945299.fastq \
+     --sjdbGTFfile /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/PanTro_intermediate/mPanTro3_extended.gtf \
+     --quantMode GeneCounts \
+     --outSAMtype None
+
+```
+
+
+
+
+
+
+

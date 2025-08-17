@@ -1,31 +1,45 @@
 ---
-title: "Untitled"
+title: "Add isoforms as gene models to reference gtf"
 output: html_document
-date: "2025-07-23"
+date: "2025-08-13"
 ---
 
-# merge
+# convert reference gtf to gff
+```{bash}
+mamba activate agat_env
+
+# turn reference into gff
+agat_convert_sp_gxf2gxf.pl \
+  --gff /work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf \
+  -o ref.std.gff3
+  
+```
+
+# extract selected MANDALORION isoforms from gff after sqanti qc
 ```{r}
+# load previously collected table with all isoforms that passed filter and have suppot of at least 2 reads
 all_tables <- read.csv("/work/vstorozhuk/export_to_git/Scripts_for_analysis_of_isoforms/classifications_support2.txt")
-all_tables %<>% filter(structural_category != "fusion")
+all_tables %<>% filter(structural_category != "fusion") # do not take fusions, not informative
 
-barcode01_manda <- all_tables %>% filter(Species == "Callithrix jacchus", pipeline == "MANDALORION") %>% dplyr::select(isoform, structural_category, subcategory, Isoform_N_reads, within_CAGE_peak, dist_to_CAGE_peak)
+# table also already contains added metadata on CAGE-peaks and number of long-reads aligned
+barcode01_manda <- all_tables %>% 
+  filter(Species == "Callithrix jacchus", pipeline == "MANDALORION") %>% 
+  dplyr::select(isoform, structural_category, subcategory, Isoform_N_reads, within_CAGE_peak, dist_to_CAGE_peak)
 
-gtf_manda <- fread("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode04/Barcode04_mandalorion_R2_sqanti_filter/isoforms.filtered.gtf",
+# load isoforms with CDS and exon ranges
+gtf_manda <- fread("/work/vstorozhuk/data/iso_pipeline/pipeline_outputs/Barcode04/Barcode04_mandalorion_R2_sqanti_report_postfilter/isoforms_corrected.cds.gff3",
             sep = "\t",
             header = FALSE,
             quote = "",
             fill = TRUE)
 
-gtf_manda %<>% as.data.frame()
-
-
 gtf_mandalorion_filtered <- gtf_manda %>%
   as.data.frame() %>%
-  # 1. extract transcript_id & gene_id
+  #extract transcript_id & gene_id
   mutate(
     transcript_id = str_extract(V9, '(?<=transcript_id ")[^"]+'),
     gene_id       = str_extract(V9, '(?<=gene_id ")[^"]+'),
+  #if gene is novel, specifically call it Novel_ + internal id (e.g. Novel_1)
     gene_id = if_else(
       str_detect(gene_id, '^[0-9]+$'),
       paste0("Novel_", gene_id),
@@ -37,11 +51,11 @@ gtf_mandalorion_filtered <- gtf_manda %>%
       gene_id
     )
   ) %>%
-  # 2. filter to only the isoforms you care about
+  # filter to only the isoforms you care about
   filter(transcript_id %in% barcode01_manda$isoform) %>%
-  # 3. join in all the extra stats columns
+  # join in all the extra stats columns
   left_join(barcode01_manda, by = c("transcript_id" = "isoform")) %>%
-  # 4. explicitly tack each one onto V9
+  # explicitly tack each one onto V9
   mutate(
     V9 = paste0(
       V9,
@@ -52,9 +66,9 @@ gtf_mandalorion_filtered <- gtf_manda %>%
       sprintf(';dist_to_CAGE_peak "%s"',         dist_to_CAGE_peak)
     )
   ) %>%
-  # 5. drop the extras so you’re back to 9 columns
   dplyr::select(V1:V9)
 
+# add "source" 
 gtf_mandalorion_filtered$V2 <- "MANDALORION"
 
 write.table(
@@ -68,54 +82,400 @@ write.table(
 
 ```
 
+# turn selected isoforms into gff, add start-stop codons when possible
 ```{bash}
 mamba activate agat_env
 
-agat_convert_sp_gff2gtf.pl \
-  --in /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/gtf_mandalorion_filtered.gtf \
-  --gtf_version 3 \
-  -o /work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/mandalorion_s2_isoforms.filtered.fixed_agat.gtf
-
-```
-
-```{bash}
- mamba activate agat_env
-
-# Reference
+# turn isoforms into gff 
 agat_convert_sp_gxf2gxf.pl \
-  --gff /work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf \
-  -o ref.std.gff3
-
-# Long-read isoforms 
-agat_convert_sp_gxf2gxf.pl \
-  --gff mandalorion_s2_isoforms.filtered.fixed_agat.gtf \
+  --gff gtf_mandalorion_filtered.gtf \
   -o lr.std.gff3
 
+# add start stop codon annotation
+agat_sp_add_start_and_stop.pl \
+  --gff lr.std.gff3 \
+  --fasta /work/vstorozhuk/final_references/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna \
+  -o lr.std_with_utrs_codons.gff3
+  
 ```
 
+74 CDS do not start by a start codon
+79 CDS do not end by a stop codon 
+
+# find cases when transcript does not start with start codon
+
+	1.	find MANDALORION transcripts that lack a start_codon and get reference transcript of these genes
+	2.  remove what is annotated to be thei UTRs in MANDALORION isoforms (incorrect annotation due to missing true start codon)
+	3.	for each MANDALORION transcript missing start_codon:
+	        find a non-mandalorion CDS that has start codon that overlaps the mandalorion ORF
+	        remember that reference transcript’s start_codon coordinates
+	        fix the CDS to account for the new start codon, handle UTRs
+	        
+```{r}
+
+############################## find MANDALORION transcripts that lack a start_codon and rbind with reference transcript of these genes
+
+isoforms <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/lr.std_with_utrs_codons.gff3")
+isoforms %<>% as.data.frame()
+
+###
+
+# get Genes without start_codon
+all_genes <- unique(isoforms$gene_id)
+with_start <- isoforms %>%
+  filter(type == "start_codon") %>%
+  pull(gene_id) %>%
+  unique()
+without_start <- setdiff(all_genes, with_start)
+
+###
+
+# filter reference transcripts to use to transfer ATG start codong for those that need fixing
+referece <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/ref.std.gff3")
+referece %<>% as.data.frame()
+referece_to_fix <- referece %>% filter(gene_id %in% without_start)
+
+############################## remove what is annotated to be thei UTRs (incorrect annotation due to missing true start codon)
+
+# combine with reference
+filtered_isoforms <- isoforms %>% filter(gene_id %in% without_start , type %in% c("gene", "transcript", "exon", "CDS"))
+to_fix <- bind_rows(filtered_isoforms, referece_to_fix)
+
+
+##############################
+
+start_codons <- to_fix %>% filter(type == "start_codon")
+
+```
+
+# find correct start codons for genes for which it is possible
+```{r}
+
+# GRanges for start codons
+gr_sc <- makeGRangesFromDataFrame(
+  start_codons,
+  seqnames.field = "seqid",
+  start.field    = "start",
+  end.field      = "end",
+  strand.field   = "strand",
+  keep.extra.columns = TRUE
+)
+
+# GRanges for isoform CDS only
+gr_fi <- filtered_isoforms %>%
+  filter(type == "CDS") %>%
+  makeGRangesFromDataFrame(
+    seqnames.field = "seqid",
+    start.field    = "start",
+    end.field      = "end",
+    strand.field   = "strand",
+    keep.extra.columns = TRUE
+  )
+
+# Overlap to find if reference start codon overlaps the transcript 
+# this way, i specifically do not try to extend the isoforms, only to shorten CDS when it is possible
+
+hits <- findOverlaps(gr_fi, gr_sc, ignore.strand = FALSE)
+
+overlap_df <- tibble(
+  iso_gene_id        = mcols(gr_fi)$gene_id[queryHits(hits)],
+  iso_transcript_id  = mcols(gr_fi)$transcript_id[queryHits(hits)],
+  start_codon_id     = mcols(gr_sc)$ID[subjectHits(hits)],
+  start_codon_gene   = mcols(gr_sc)$gene_id[subjectHits(hits)],
+  start_codon_start  = start(gr_sc)[subjectHits(hits)],
+  start_codon_end    = end(gr_sc)[subjectHits(hits)]
+) %>%
+  distinct() %>%
+  group_by(iso_gene_id, iso_transcript_id) %>%
+  summarise(
+    start_codon_id    = first(start_codon_id),
+    start_codon_gene  = first(start_codon_gene),
+    start_codon_start = first(start_codon_start),
+    start_codon_end   = first(start_codon_end),
+    same_gene         = first(iso_gene_id == start_codon_gene),
+    .groups = "drop"
+  )
+
+overlap_df
+
+```
+
+and finally:
+# fix the first CDS and exon on that MANDALORION transcript to now use the remembered start codon coordinate
+
+```{r}
+library(dplyr)
+
+fix_with_start_codon <- function(filtered_isoforms, overlap_df) {
+  # overlaps: iso_transcript_id, start_codon_start, start_codon_end
+  codons <- overlap_df %>%
+    distinct(iso_transcript_id, start_codon_start, start_codon_end)
+
+  # helper to coerce Parent (and a few others) to character
+  normalize_cols <- function(df) {
+    if ("Parent" %in% names(df) && is.list(df$Parent)) {
+      df$Parent <- vapply(df$Parent,
+                          function(z) if (length(z)) paste(z, collapse = ",") else NA_character_,
+                          FUN.VALUE = character(1))
+    }
+    df %>%
+      mutate(
+        ID = as.character(ID),
+        Parent = as.character(Parent),
+        seqid = as.character(seqid),
+        source = as.character(source),
+        type = as.character(type),
+        dist_to_CAGE_peak = as.character(dist_to_CAGE_peak),
+        isoform_N_reads = as.character(isoform_N_reads)
+      )
+  }
+
+  # join start-codon coords onto rows for the affected transcripts
+  x <- filtered_isoforms %>%
+    normalize_cols() %>%
+    left_join(codons, by = c("transcript_id" = "iso_transcript_id"))
+
+  #  build five_prime_utr rows from exon geometry (spliced UTRs) ----
+  utr5 <- x %>%
+    filter(type == "exon", !is.na(start_codon_start)) %>%
+    mutate(
+      # + strand: UTR is up to codon_start - 1
+      # - strand: UTR is from codon_end + 1 (numerically larger 5' region)
+      utr_start = if_else(strand == "+", start, pmax(start, start_codon_end + 1L)),
+      utr_end   = if_else(strand == "+", pmin(end,   start_codon_start - 1L), end)
+    ) %>%
+    filter(utr_start <= utr_end) %>%
+    mutate(
+      type   = "five_prime_utr",
+      start  = utr_start,
+      end    = utr_end,
+      phase  = NA_integer_,
+      ID     = paste0("utr5-", row_number()),
+      Parent = transcript_id
+    ) %>%
+    select(names(filtered_isoforms)) %>%
+    normalize_cols()
+
+  # helper: does a row overlap the start codon interval?
+  overlaps_codon <- function(start, end, sc_start, sc_end) {
+    !is.na(sc_start) & !is.na(sc_end) & (start <= sc_end) & (end >= sc_start)
+  }
+
+  # adjust CDS and exon only; others unchanged
+  df_adj <- x %>%
+    group_by(transcript_id) %>%
+    mutate(
+      # mark rows entirely 5' to the codon to drop later
+      drop_5prime =
+        case_when(
+          is.na(start_codon_start) ~ FALSE,                                 # not targeted
+          strand == "+" & type %in% c("exon","CDS") ~ end   < start_codon_start,
+          strand == "-" & type %in% c("exon","CDS") ~ start > start_codon_end,
+          TRUE ~ FALSE
+        ),
+      # truncate the single exon/CDS that *contains* the codon boundary
+      start = case_when(
+        type %in% c("exon","CDS") &
+          strand == "+" &
+          overlaps_codon(start, end, start_codon_start, start_codon_end) ~
+            pmax(start, start_codon_start),
+        TRUE ~ start
+      ),
+      end = case_when(
+        type %in% c("exon","CDS") &
+          strand == "-" &
+          overlaps_codon(start, end, start_codon_start, start_codon_end) ~
+            pmin(end, start_codon_end),
+        TRUE ~ end
+      )
+    ) %>%
+    # drop fully 5' segments of exon/CDS
+    filter(!(type %in% c("exon","CDS") & drop_5prime)) %>%
+    # guard against accidental inversions after truncation
+    mutate(
+      start = if_else(start > end, end, start),
+      end   = if_else(end   < start, start, end)
+    ) %>%
+    ungroup() %>%
+    select(names(filtered_isoforms)) %>%
+    normalize_cols()
+
+  # adjusted features + explicit, spliced 5'UTR segments
+  bind_rows(df_adj, utr5)
+}
+
+# run
+df <- fix_with_start_codon(filtered_isoforms, overlap_df)
+
+# Build GRanges
+gr <- GRanges(
+  seqnames = df$seqid,
+  ranges   = IRanges(start = df$start, end = df$end),
+  strand   = df$strand
+)
+
+# Put everything else into mcols (these become GTF columns/attributes)
+# Avoid reserved GRanges column names
+reserved <- c("seqnames","ranges","strand","seqlevels","seqlengths","isCircular",
+              "start","end","width","element","seqid")  # plus the three used above
+
+mcols(gr) <- df %>%
+  dplyr::select(-all_of(c("seqid","start","end","strand"))) %>%
+  mutate(across(everything(), ~ if (is.list(.)) vapply(., toString, "") else .))
+
+# Write GTF
+export(gr, "/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/fixed_start_codons.gff", format = "gtf")
+
+```
+
+# create set of all isoforms, but now use subset with fixed start codons
+```{r}
+
+################## swap models which could be fixed
+
+all_new <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/lr.std_with_utrs_codons.gff3")
+all_new %<>% as.data.frame()
+
+fixed_new <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/fixed_start_codons.gff")
+fixed_new %<>% as.data.frame()
+
+
+all_new_minus_fixed <- all_new %>% filter(!(gene_id %in% fixed_new$gene_id))
+
+# safe fix of listed parent
+all_new_minus_fixed <- all_new_minus_fixed %>%
+  mutate(
+    Parent = sapply(Parent, function(x) {
+      if (length(x) == 0) NA_character_ else paste(x, collapse = ",")
+    })
+  )
+
+# safe merge to keep NA and not character(0) parent
+all_new_minus_fixed <- all_new_minus_fixed %>% mutate(Parent = as.character(Parent))
+fixed_new <- fixed_new %>% mutate(Parent = as.character(Parent))
+
+
+all_new_with_fixed <- bind_rows(all_new_minus_fixed, fixed_new)
+
+################## to gtf
+
+gr <- GRanges(
+  seqnames = all_new_with_fixed$seqid,
+  ranges   = IRanges(start = all_new_with_fixed$start, end = all_new_with_fixed$end),
+  strand   = all_new_with_fixed$strand
+)
+
+# Put everything else into mcols (these become GTF columns/attributes)
+# Avoid reserved GRanges column names
+reserved <- c("seqnames","ranges","strand","seqlevels","seqlengths","isCircular",
+              "start","end","width","element","seqid")  # plus the three used above
+
+mcols(gr) <- all_new_with_fixed %>%
+  dplyr::select(-all_of(c("seqid","start","end","strand"))) %>%
+  mutate(across(everything(), ~ if (is.list(.)) vapply(., toString, "") else .))
+
+# Write GTF
+export(gr, "/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/all_new_with_fixed.gff", format = "gtf")
+
+
+```
+
+# process together to gff (adds UTRs), re-run start-stop codon addition and add phase and again to gff 
 ```{bash}
-grep -h -v '^#' ref.std.gff3 lr.std.gff3 > combined.gff3
 
-agat_sp_fix_features_locations_duplicated.pl \
-  --gff combined.gff3 \
-  --model 1,3 \
-  -o merged.with_isoforms.gff3
+# to gff (also adds utrs, and other fixes)
+agat_convert_sp_gxf2gxf.pl \
+  --gff all_new_with_fixed.gff \
+  -o fixed_start_codons.gff3
+
+# add start stop codon annotation
+agat_sp_add_start_and_stop.pl \
+  --gff fixed_start_codons.gff3 \
+  --fasta /work/vstorozhuk/final_references/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna \
+  -o fixed.gff3
+  
+# add phase
+agat_sp_fix_cds_phases.pl \
+  --gff fixed.gff3 \
+  --fasta /work/vstorozhuk/final_references/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna \
+  -o fixed_start_codons_phased.gff3
+
+# to gff fixed
+agat_convert_sp_gxf2gxf.pl \
+  --gff fixed_start_codons_phased.gff3 \
+  -o test.gff3
+  
+```
+
+# merge with reference
+```{r}
+
+isoforms <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/test.gff3")
+isoforms %<>% as.data.frame()
+
+referece <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/ref.std.gff3")
+referece %<>% as.data.frame()
+
+
+p <- referece$Parent
+referece$Parent <- ifelse(
+  lengths(p) == 0L,
+  NA_character_,
+  vapply(p, `[`, character(1L), 1L)   
+)
+
+
+p <- isoforms$Parent
+isoforms$Parent <- ifelse(
+  lengths(p) == 0L,
+  NA_character_,
+  vapply(p, `[`, character(1L), 1L)   
+)
+
+final <- bind_rows(referece, isoforms)
+
+################## to gtf
+
+gr <- GRanges(
+  seqnames = final$seqid,
+  ranges   = IRanges(start = final$start, end = final$end),
+  strand   = final$strand
+)
+# Put everything else into mcols (these become GTF columns/attributes)
+# Avoid reserved GRanges column names
+reserved <- c("seqnames","ranges","strand","seqlevels","seqlengths","isCircular",
+              "start","end","width","element","seqid")  # plus the three used above
+mcols(gr) <- final %>%
+  dplyr::select(-all_of(c("seqid","start","end","strand"))) %>%
+  mutate(across(everything(), ~ if (is.list(.)) vapply(., toString, "") else .))
+# Write GTF
+export(gr, "/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/final.gff", format = "gtf")
+
 
 ```
 
+# standardize the merged set
 ```{bash}
 
 agat_convert_sp_gff2gtf.pl \
-  --in merged.with_isoforms.gff3 \
+  --in final.gff \
   --gtf_version 3 \
   -o merged.with_isoforms.gtf
 
 ```
+ 
+# Manual curation:
 
+fix cases when parent is wrong, 
+remove bistronic isoform
+remove LOC which are fixed with new gene
+fix misannotated gene
+determine dominant transcript per gene
+handle UTRs when start or stop codon is missing:
+  for cases when start codon could not be recovered - remove 5 prime UTR entry for that transcript
+  for cases when end codon is missing - remove 3 prime UTR entry for that transcript
 
-# Manual curation
 ```{r}
-
 library(dplyr)
 library(GenomicRanges)
 library(IRanges)
@@ -125,8 +485,15 @@ merged <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_mergi
 merged %<>% as.data.frame()
 to_fix <- merged
 
-# remove troubling bicistronic transcripts
+# remove troubling bicistronic transcripts SNRPN-SNURF and Isoform599_2 which is impossible to curate 
 to_fix %<>% dplyr::filter(!(gene_id %in% c("SNRPN", "SNURF") & source == "MANDALORION"))
+to_fix %<>% dplyr::filter(!(transcript_id == "Isoform599_2" & source == "MANDALORION"))
+
+# remove loci which become fixed with new gene
+to_fix %<>% dplyr::filter(!(gene_id %in% c("LOC128930468", "LOC118146204", "LOC128932359")))
+
+# remove novelGene_1, it is shorter duplicate of novelGene_2
+to_fix %<>% dplyr::filter(!(gene_id == "novelGene_1" & source == "MANDALORION"))
 
 # one specific IER3IP1 transcript wrongly becomes LOC103787656 -> rename
 to_fix <- to_fix %>%
@@ -143,43 +510,91 @@ to_fix <- to_fix %>%
     )
   )
 
-# STOML2 - LOC128932359 Isoform167_7 is actual STOML2
+# rename old STOML2 XM_054255229.1 to misannotated_STOML2
 
-# find dom isoform - mark.
+to_fix <- to_fix %>%
+  mutate(
+    gene_id = ifelse(gene_id == "STOML2", "misannotated_STOML2", gene_id),
+    gene    = ifelse(gene == "STOML2", "misannotated_STOML2", gene),
+    Parent  = ifelse(Parent == "STOML2", "misannotated_STOML2", Parent)
+  )
 
-# !!!!!!!! Handle ties 
 
-# Find dominant transcript per gene
-dom_map <- to_fix %>%
+# rename novelGene_LOC128932359_AS to STOML2
+
+to_fix <- to_fix %>%
+  mutate(
+    gene_id = ifelse(gene_id == "novelGene_LOC128932359_AS", "STOML2", gene_id),
+    gene    = ifelse(gene == "novelGene_LOC128932359_AS", "STOML2", gene),
+    Parent  = ifelse(Parent == "novelGene_LOC128932359_AS", "STOML2", Parent)
+  )
+
+
+
+#  Determine dominant transcript(s) per gene
+tx_dom <- to_fix %>%
+  filter(type == "transcript") %>%
+  mutate(reads_num = suppressWarnings(as.numeric(isoform_N_reads))) %>%
   group_by(gene_id) %>%
+  mutate(
+    n_non_na = sum(!is.na(reads_num)),
+    max_read = ifelse(n_non_na > 0, max(reads_num, na.rm = TRUE), NA_real_),
+    n_top    = ifelse(n_non_na > 0, sum(!is.na(reads_num) & reads_num == max_read), NA_integer_),
+    Dominant = case_when(
+      n_non_na == 0 ~ NA_character_,
+      is.na(reads_num) ~ NA_character_,
+      reads_num == max_read & n_top > 1 ~ "TIE",
+      reads_num == max_read ~ "TRUE",
+      TRUE ~ "FALSE"
+    )
+  ) %>%
+  ungroup() %>%
+  dplyr::select(transcript_id, Dominant)
+
+# join back to all rows by transcript_id
+to_fix <- to_fix %>%
+  left_join(tx_dom, by = "transcript_id")
+
+
+#for cases when start codon could not be recovered - do not add 5 prime UTR 
+#for cases when end codon is missing - do not add 3 prime UTR value
+
+
+# Split: keep "other" rows intact, process only MANDALORION non-gene ---
+mand <- to_fix %>%
+  filter(source == "MANDALORION", type != "gene")
+
+others <- to_fix %>%
+  filter(!(source == "MANDALORION" & type != "gene"))
+
+# Per-transcript flags for presence of start/stop codons ---
+tx_flags <- mand %>%
+  group_by(gene_id, transcript_id) %>%
   summarise(
-    dominant_tx = {
-      vals <- isoform_N_reads
-      if (all(is.na(vals))) NA_character_ else {
-        idx <- which(vals == max(vals, na.rm = TRUE))
-        transcript_id[idx[1]]
-      }
-    },
-    has_reads = !all(is.na(isoform_N_reads)),
+    has_start = any(type == "start_codon"),
+    has_stop  = any(type == "stop_codon"),
     .groups = "drop"
   )
 
-# Join and assign Dominant
-to_fix <- to_fix %>%
-  left_join(dom_map, by = "gene_id") %>%
+# Join flags back and drop UTRs when codon is missing ---
+mand_fixed <- mand %>%
+  left_join(tx_flags, by = c("gene_id", "transcript_id")) %>%
   mutate(
-    Dominant = case_when(
-      !has_reads ~ NA,                                     # no isoform_N_reads for this gene
-      type != "transcript" ~ NA,                           # not a transcript row
-      transcript_id == dominant_tx ~ TRUE,                 # dominant transcript
-      TRUE ~ FALSE                                          # other transcript
-    )
+    has_start = coalesce(has_start, FALSE),
+    has_stop  = coalesce(has_stop,  FALSE)
   ) %>%
-  dplyr::select(-dominant_tx, -has_reads)
+  filter(
+    # drop 5' UTR if no start_codon in that transcript
+    !(type == "five_prime_utr"  & !has_start),
+    # drop 3' UTR if no stop_codon in that transcript
+    !(type == "three_prime_utr" & !has_stop)
+  ) %>%
+  dplyr::select(-has_start, -has_stop)
+
+#  Recombine everything ---
+to_fix <- bind_rows(others, mand_fixed)
 
 
-
-library(dplyr)
 
 tail_cols <- c(
   "structural_category", "subcategory", "within_CAGE_peak",
@@ -189,7 +604,7 @@ tail_cols <- c(
 
 to_fix <- to_fix %>% relocate(any_of(tail_cols), .after = last_col())
 
-#####
+##### turn into gtf format
 
 df <- to_fix %>%
   mutate(
@@ -197,13 +612,8 @@ df <- to_fix %>%
     strand = ifelse(strand == ".", "*", strand),
     # Keep score/phase types tidy
     score  = suppressWarnings(as.numeric(score)),
-    phase  = suppressWarnings(as.integer(phase)),
-    # GTF attributes are strings; make booleans explicit
-    Dominant = case_when(
-      is.na(Dominant) ~ NA_character_,
-      Dominant ~ "TRUE",
-      TRUE ~ "FALSE"
-    )
+    phase  = suppressWarnings(as.integer(phase))
+  
   )
 
 # Build GRanges
@@ -232,160 +642,6 @@ export(gr, "/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJa
 # double check loading
 ```{r}
 gtf_produced <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/mCalJac1.2_extended.gtf")
-
+gtf_produced %>% filter(gene_id == "NEFM") %>% View()
+NEFM
 ```
-
-# plot
-```{r}
-gtf_refseq   <- rtracklayer::readGFF("/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf")
-gtf_produced <- rtracklayer::readGFF("/work/vstorozhuk/export_to_git/Scripts_for_merging_gtfs_and_qc/CalJac_intermediate/mCalJac1.2_extended.gtf")
-cage_peaks   <- rtracklayer::import("/work/vstorozhuk/data/CAGE/rheMac8_cage_peaks_in_caljac1.2_coords.bed")
-
-# Make sure isoform_N_reads are numeric (harmless if already)
-gtf_produced$isoform_N_reads <- suppressWarnings(as.numeric(gtf_produced$isoform_N_reads))
-
-# --- 1) Build exon tables; for produced, *carry over existing Dominant from transcript rows* ---
-gtf_ref_exons <- subset(gtf_refseq, type == "exon" & !is.na(gene_id))
-
-# Take transcript-level flags from the produced GTF
-tx_flags <- gtf_produced |>
-  subset(type == "transcript" & !is.na(gene_id) & !is.na(transcript_id)) |>
-  as.data.frame() |>
-  dplyr::select(gene_id, transcript_id, isoform_N_reads, Dominant)
-
-# Join those flags onto exon rows (no recomputation of dominance)
-gtf_prod_exons <- gtf_produced |>
-  subset(type == "exon" & !is.na(gene_id)) |>
-  as.data.frame() |>
-  dplyr::left_join(tx_flags, by = c("gene_id", "transcript_id"),
-                   suffix = c("", ".tx")) |>
-  dplyr::mutate(
-    # prefer transcript-level columns if exon-level existed (usually exon-level are NA)
-    isoform_N_reads = dplyr::coalesce(isoform_N_reads.tx, isoform_N_reads),
-    Dominant        = dplyr::coalesce(Dominant.tx, Dominant),
-    # Dominant might be "TRUE"/"FALSE" strings; force logical
-    Dominant        = as.logical(Dominant)
-  ) |>
-  dplyr::select(-dplyr::ends_with(".tx"))
-
-# --- 2) Plot using the existing Dominant flag ---
-suppressPackageStartupMessages({
-  library(Gviz)
-  library(GenomicRanges)
-  library(IRanges)
-  library(dplyr)
-})
-
-options(ucscChromosomeNames = FALSE)
-
-plot_two_gtfs_with_cage <- function(gene_name,
-                                    cage_peaks,
-                                    gtf_ref_exons,
-                                    gtf_prod_exons,
-                                    genome    = "mCalJac1.2",
-                                    buffer.bp = 25000) {
-
-  # helper: build GRanges and keep meta we care about
-  make_gr <- function(df, gene.col, tx.col) {
-    if (!"isoform_N_reads" %in% names(df)) df$isoform_N_reads <- NA_real_
-    if (!"Dominant"        %in% names(df)) df$Dominant        <- NA
-
-    mcols <- df[, c(gene.col, tx.col, "isoform_N_reads", "Dominant")]
-    colnames(mcols) <- c("gene", "transcript", "isoform_N_reads", "Dominant")
-
-    GRanges(
-      seqnames = df$seqid,
-      ranges   = IRanges(start = df$start, end = df$end),
-      strand   = df$strand,
-      mcols
-    )
-  }
-
-  ref.gr  <- make_gr(gtf_ref_exons,  "gene_id", "transcript_id")
-  prod.gr <- make_gr(gtf_prod_exons, "gene_id", "transcript_id")
-
-  ref.gene  <- ref.gr[ref.gr$gene  == gene_name]
-  prod.gene <- prod.gr[prod.gr$gene == gene_name]
-  if (length(ref.gene) == 0 && length(prod.gene) == 0) {
-    stop("Gene '", gene_name, "' not found in either GTF.")
-  }
-
-  all.starts <- c(start(ref.gene),  start(prod.gene))
-  all.ends   <- c(end(ref.gene),    end(prod.gene))
-  plot.range <- IRanges(min(all.starts) - buffer.bp,
-                        max(all.ends)   + buffer.bp)
-  chr <- as.character(GenomeInfoDb::seqnames(if (length(ref.gene)) ref.gene else prod.gene)[1])
-  region.gr <- GRanges(seqnames = chr, ranges = plot.range)
-
-  ref.sub   <- subsetByOverlaps(ref.gr,   region.gr)
-  prod.sub  <- subsetByOverlaps(prod.gr,  region.gr)
-  peaks.sub <- subsetByOverlaps(cage_peaks, region.gr)
-
-  # Use the already-present Dominant flag
-  dom.sub <- prod.sub[
-    prod.sub$gene == gene_name &
-      !is.na(prod.sub$Dominant) &
-      prod.sub$Dominant
-  ]
-
-  col_ref  <- ifelse(ref.sub$gene  == gene_name, "orange", "gray80")
-  col_prod <- ifelse(prod.sub$gene == gene_name, "orange", "gray80")
-
-  tr_ref  <- GeneRegionTrack(
-    ref.sub, genome = genome, chromosome = chr,
-    name = "RefSeq", transcriptAnnotation = "transcript",
-    showId = TRUE, background.title = "lightblue",
-    fill = col_ref
-  )
-
-  tr_prod <- GeneRegionTrack(
-    prod.sub, genome = genome, chromosome = chr,
-    name = "RefSeq + Novel Isoforms", transcriptAnnotation = "transcript",
-    showId = TRUE, background.title = "lightgoldenrod",
-    fill = col_prod
-  )
-
-  tr_dom <- GeneRegionTrack(
-    dom.sub, genome = genome, chromosome = chr,
-    name = "Dominant (pre-flagged)", transcriptAnnotation = "transcript",
-    showId = TRUE, background.title = "lightpink",
-    fill = if (length(dom.sub) > 0) "purple" else NA
-  )
-
-  tr_peaks <- AnnotationTrack(
-    peaks.sub, genome = genome, chromosome = chr,
-    name = "CAGE", shape = "box", fill = "red",
-    stacking = "dense", background.title = "pink"
-  )
-
-  highlight_all <- HighlightTrack(
-    trackList  = list(tr_ref, tr_prod, tr_dom),
-    start      = start(peaks.sub) - 50,
-    end        = end(peaks.sub) + 50,
-    chromosome = chr,
-    col        = NA,
-    fill       = "yellow"
-  )
-
-  plotTracks(
-    list(highlight_all, tr_peaks),
-    from       = start(plot.range),
-    to         = end(plot.range),
-    chromosome = chr,
-    main       = paste0("Gene: ", gene_name)
-  )
-}
-```
-
-
-```{r}
-plot_two_gtfs_with_cage(
-  gene_name      = "SERHL2",
-  cage_peaks     = cage_peaks,
-  gtf_ref_exons  = gtf_ref_exons,
-  gtf_prod_exons = gtf_prod_exons
-)
-```
-
-
-

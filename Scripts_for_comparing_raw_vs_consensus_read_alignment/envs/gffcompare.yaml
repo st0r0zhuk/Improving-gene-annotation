@@ -1,0 +1,36 @@
+name: gffcompare
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - _libgcc_mutex=0.1
+  - _openmp_mutex=4.5
+  - bzip2=1.0.8
+  - ca-certificates=2025.8.3
+  - curl=7.64.0
+  - gffcompare=0.12.9
+  - gffread=0.12.7
+  - htslib=1.9
+  - krb5=1.16.3
+  - libcurl=7.64.0
+  - libdeflate=1.0
+  - libedit=3.1.20191231
+  - libgcc=15.1.0
+  - libgcc-ng=15.1.0
+  - libgomp=15.1.0
+  - libpng=1.6.43
+  - libssh2=1.8.0
+  - libstdcxx=15.1.0
+  - libstdcxx-ng=15.1.0
+  - libuuid=2.38.1
+  - libzlib=1.2.13
+  - mysql-connector-c=6.1.6
+  - ncurses=6.1
+  - openssl=1.0.2u
+  - samtools=1.9
+  - tk=8.6.13
+  - ucsc-bedgraphtobigwig=377
+  - xz=5.2.6
+  - zlib=1.2.13
+prefix: /home/vstorozhuk/.conda/envs/gffcompare

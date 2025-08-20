@@ -1,0 +1,500 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-08-18"
+---
+
+```{bash}
+conda env export --no-builds --name pychopper > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/pychopper.yaml
+conda env export --no-builds --name c3poa > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/seqtk.yaml
+```
+
+```{bash}
+
+cat > primer_config.txt <<EOF
++:5Prime_adapter,-3Prime_adapter|-:3Prime_adapter,-5Prime_adapter
+EOF
+
+```
+
+
+```{bash}
+cd /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment
+
+# get subreads
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode01_subset_5of6/Barcode01_subset_5of6_consensus/Barcode01_subset_5of6_consensusSplint1/R2C2_Subreads.fastq ./Human/HomoSap_sub.fastq
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode02_subset_5of6/Barcode02_subset_5of6_consensus/Barcode02_subset_5of6_consensusSplint1/R2C2_Subreads.fastq ./PanTro/PanTro_sub.fastq
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode03_subset_5of6/Barcode03_subset_5of6_consensus/Barcode03_subset_5of6_consensusSplint1/R2C2_Subreads.fastq ./RheMac/RheMac_sub.fastq
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode04_subset_5of6/Barcode04_subset_5of6_consensus/Barcode04_subset_5of6_consensusSplint1/R2C2_Subreads.fastq ./CalJac/CalJac_sub.fastq
+
+# get consensus reads
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode01_subset_5of6/Barcode01_subset_5of6_consensus/Barcode01_subset_5of6_consensusSplint1/R2C2_Consensus.fasta ./Human/HomoSap_con.fasta
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode02_subset_5of6/Barcode02_subset_5of6_consensus/Barcode02_subset_5of6_consensusSplint1/R2C2_Consensus.fasta ./PanTro/PanTro_con.fasta
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode03_subset_5of6/Barcode03_subset_5of6_consensus/Barcode03_subset_5of6_consensusSplint1/R2C2_Consensus.fasta ./RheMac/RheMac_con.fasta
+cp /work/vstorozhuk/data/iso_pipeline/pipeline_outputs/subsets/Barcode04_subset_5of6/Barcode04_subset_5of6_consensus/Barcode04_subset_5of6_consensusSplint1/R2C2_Consensus.fasta ./CalJac/CalJac_con.fasta
+
+# convert fasta to fastq
+mamba activate c3poa
+seqtk seq -F 'I' Human/HomoSap_con.fasta > Human/HomoSap_con.fastq
+seqtk seq -F 'I' PanTro/PanTro_con.fasta > PanTro/PanTro_con.fastq
+seqtk seq -F 'I' RheMac/RheMac_con.fasta > RheMac/RheMac_con.fastq
+seqtk seq -F 'I' CalJac/CalJac_con.fasta > CalJac/CalJac_con.fastq
+
+```
+
+
+	•	All subreads coming from the same original concatemer will share the same UUID
+	take only 2nd subread
+	seqtk subseq R2C2_Subreads.fastq <(grep "^@" R2C2_Subreads.fastq | grep "_0" | sed 's/@//') > R2C2_firstSubread.fastq
+	
+```{bash}
+mamba activate c3poa
+
+seqtk subseq Human/HomoSap_sub.fastq <(grep "^@" Human/HomoSap_sub.fastq | grep "_1" | sed 's/@//') > Human/HomoSap_firstSubread.fastq
+
+seqtk subseq CalJac/CalJac_sub.fastq <(grep "^@" CalJac/CalJac_sub.fastq | grep "_1" | sed 's/@//') > CalJac/CalJac_firstSubread.fastq
+
+seqtk subseq RheMac/RheMac_sub.fastq <(grep "^@" RheMac/RheMac_sub.fastq | grep "_1" | sed 's/@//') > RheMac/RheMac_firstSubread.fastq
+
+seqtk subseq PanTro/PanTro_sub.fastq <(grep "^@" PanTro/PanTro_sub.fastq | grep "_1" | sed 's/@//') > PanTro/PanTro_firstSubread.fastq
+
+```
+
+
+
+# cut adaptors
+
+## Human
+```{bash}
+conda activate pychopper
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  Human/HomoSap_firstSubread.fastq \
+  Human/HomoSap_firstSubread_pychopper_trimmed.fastq
+ 
+#----------------------------------
+#Reads with two primers: 73.20%
+#Rescued reads:          17.85%
+#Unusable reads:         8.95%
+#-----------------------------------
+
+
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  Human/HomoSap_con.fastq\
+ Human/HomoSap_con_pychopper_trimmed.fastq
+
+#-----------------------------------
+#Reads with two primers: 69.46%
+#Rescued reads:          24.90%
+#Unusable reads:         5.64%
+#-----------------------------------
+
+  
+```
+
+## CalJac
+
+```{bash}
+conda activate pychopper
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  CalJac/CalJac_firstSubread.fastq \
+ CalJac/CalJac_firstSubread_pychopper_trimmed.fastq
+ 
+# Total fastq records in input file: 88,681
+# -----------------------------------
+# Reads with two primers: 84.58%
+# Rescued reads:          3.82%
+# Unusable reads:         11.60%
+# -----------------------------------
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  CalJac/CalJac_con.fastq \
+  CalJac/CalJac_con_pychopper_trimmed.fastq
+
+#Total fastq records in input file: 88,681
+#-----------------------------------
+#Reads with two primers: 87.46%
+#Rescued reads:          8.31%
+#Unusable reads:         4.24%
+#-----------------------------------
+
+  
+```
+
+
+
+## RheMac
+```{bash}
+conda activate pychopper
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  RheMac/RheMac_firstSubread.fastq \
+ RheMac/RheMac_firstSubread_pychopper_trimmed.fastq
+ 
+# Total fastq records in input file: 199548
+#-----------------------------------
+#Reads with two primers: 79.72%
+#Rescued reads:          10.36%
+#Unusable reads:         9.92%
+#-----------------------------------
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  RheMac/RheMac_con.fastq \
+  RheMac/RheMac_con_pychopper_trimmed.fastq
+
+# Total fastq records in input file: 199548
+#-----------------------------------
+#Reads with two primers: 77.47%
+#Rescued reads:          16.68%
+#Unusable reads:         5.85%
+
+  
+```
+
+
+## PanTro
+```{bash}
+conda activate pychopper
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  PanTro/PanTro_firstSubread.fastq \
+  PanTro/PanTro_firstSubread_pychopper_trimmed.fastq
+ 
+#Total fastq records in input file: 187928
+#-----------------------------------
+#Reads with two primers: 78.63%
+#Rescued reads:          13.10%
+#Unusable reads:         8.27%
+#-----------------------------------
+
+
+pychopper \
+  -m edlib \
+  -b adapters.fasta \
+  -c primer_config.txt \
+  -t 8 \
+  PanTro/PanTro_con.fastq\
+ PanTro/PanTro_con_pychopper_trimmed.fastq
+
+#Total fastq records in input file: 187928
+
+#-----------------------------------
+#Reads with two primers: 72.99%
+#Rescued reads:          23.99%
+#Unusable reads:         3.02%
+#-----------------------------------
+
+```
+
+
+# consensus reads are better trimmed by pychopper
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(tibble)
+
+# ---------------------------
+# 1) Hard-code your results
+# ---------------------------
+df <- tribble(
+  ~species, ~dataset,        ~two_primers, ~rescued, ~unusable,
+  "Human",  "Second subread",  73.20,        17.85,     8.95,
+  "Human",  "Consensus",      69.46,        24.90,     5.64,
+  "CalJac", "Second subread",  84.58,         3.82,    11.60,
+  "CalJac", "Consensus",      87.46,         8.31,     4.24,
+  "RheMac", "Second subread",  79.72,        10.36,     9.92,
+  "RheMac", "Consensus",      77.47,        16.68,     5.85,
+  "PanTro", "Second subread",  78.63,        13.10,     8.27,
+  "PanTro", "Consensus",      72.99,        23.99,     3.02
+)
+
+df <- df %>% mutate(
+  species = factor(species, levels = c("Human","CalJac","RheMac","PanTro")),
+  dataset = factor(dataset, levels = c("Consensus", "Second subread"))
+)
+
+
+# Long format for stacking
+df_long <- df %>%
+  pivot_longer(cols = c(two_primers, rescued, unusable),
+               names_to = "component", values_to = "pct") %>%
+  mutate(
+    component = factor(component,
+      levels = c("two_primers","rescued","unusable"),
+      labels = c("Two primers","Rescued","Unusable")
+    )
+  )
+
+# Stacked bars: x = dataset, y = percent, facet by species
+# Add labels for each stacked segment
+p <- ggplot(df_long, aes(x = dataset, y = pct, fill = component)) +
+  geom_col(width = 0.7) +
+  geom_text(
+    aes(label = paste0(round(pct, 1), "%")),
+    position = position_stack(vjust = 0.5),  # centers label in stack
+    color = "white",                         # readable on colored bars
+    size = 3
+  ) +
+  facet_wrap(~ species, ncol = 1) +
+  scale_y_continuous(labels = function(x) paste0(x, "%"),
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = c("Two primers" = "#4C9F70",
+                               "Rescued"     = "#84C999",
+                               "Unusable"    = "#F44336")) +
+  labs(x = NULL, y = "Percent of reads", fill = NULL,
+       title = "Status of adaptor trimming with Pychopper") + 
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  ) +
+  coord_flip()
+
+p
+
+```
+
+# create minimap indices
+```{bash}
+cd /work/vstorozhuk/final_references
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+REF_CalJac="/work/vstorozhuk/final_references/GCF_011100555.1_mCalJa1.2.pat.X_genomic.fna"
+REF_PanTro="/work/vstorozhuk/final_references/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.fna"
+REF_RheMac="/work/vstorozhuk/final_references/GCF_003339765.1_Mmul_10_genomic.fna"
+REF_Human="/work/vstorozhuk/final_references/Homo_sapiens.GRCh38.dna_sm.toplevel.fa"
+
+MINIMAP2="$HOME/Mandalorion_notes/minimap/minimap2/minimap2"
+
+for REF in "$REF_CalJac" "$REF_PanTro" "$REF_RheMac" "$REF_Human"; do
+  [[ -f "$REF" ]] || { echo "Missing FASTA: $REF" >&2; exit 1; }
+  MMI="${REF%.*}.mmi"    
+  echo "Indexing $REF -> $MMI"
+  "$MINIMAP2" -d "$MMI" "$REF"
+done
+
+```
+
+# align
+```{bash}
+mamba create -n minimap
+mamba activate minimap
+
+git clone https://github.com/lh3/minimap2
+cd minimap2 && make
+```
+
+# align trimmed subreads and consensus reads
+```{bash}
+
+# indices
+MMI_CalJac="/work/vstorozhuk/final_references/GCF_011100555.1_mCalJa1.2.pat.X_genomic.mmi"
+MMI_PanTro="/work/vstorozhuk/final_references/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.mmi"
+MMI_RheMac="/work/vstorozhuk/final_references/GCF_003339765.1_Mmul_10_genomic.mmi"
+MMI_Human="/work/vstorozhuk/final_references/Homo_sapiens.GRCh38.dna_sm.toplevel.mmi"
+
+# per species subread-consensus pairs
+R1_CalJac="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/CalJac/CalJac_firstSubread_pychopper_trimmed.fastq"
+R2_CalJac="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/CalJac/CalJac_con_pychopper_trimmed.fastq"
+
+R1_PanTro="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/PanTro/PanTro_firstSubread_pychopper_trimmed.fastq"
+R2_PanTro="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/PanTro/PanTro_con_pychopper_trimmed.fastq"
+
+R1_RheMac="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/RheMac/RheMac_firstSubread_pychopper_trimmed.fastq"
+R2_RheMac="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/RheMac/RheMac_con_pychopper_trimmed.fastq"
+
+R1_Human="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/Human/HomoSap_firstSubread_pychopper_trimmed.fastq"
+R2_Human="/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/Human/HomoSap_con_pychopper_trimmed.fastq"
+
+
+cd /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment
+conda activate gffcompare
+
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_CalJac $R1_CalJac > CalJac/CalJac_R1_aln.sam
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_CalJac $R2_CalJac > CalJac/CalJac_R2_aln.sam
+
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_PanTro $R1_PanTro > PanTro/PanTro_R1_aln.sam
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_PanTro $R2_PanTro > PanTro/PanTro_R2_aln.sam
+
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_RheMac $R1_RheMac > RheMac/RheMac_R1_aln.sam
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_RheMac $R2_RheMac > RheMac/RheMac_R2_aln.sam
+
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_Human $R1_Human > Human/HomoSap_R1_aln.sam
+~/Mandalorion_notes/minimap/minimap2/minimap2 -ax splice -uf -k14 -t 20 $MMI_Human $R2_Human > Human/HomoSap_R2_aln.sam
+
+
+```
+
+# index sam, turn into bam and get stats
+```{bash}
+conda activate gffcompare
+
+############## ########## ########## ######  caljac
+Name="CalJac"
+samtools view -bS $Name/CalJac_R1_aln.sam | samtools sort -@ 20 -o $Name/R1_aln.bam
+samtools index $Name/R1_aln.bam
+samtools stats $Name/R1_aln.bam > $Name/R1_aln.stats
+grep ^SN $Name/R1_aln.stats | cut -f 2- > $Name/R1_summary.txt
+
+samtools view -bS $Name/CalJac_R2_aln.sam | samtools sort -@ 20 -o $Name/R2_aln.bam
+samtools index $Name/R2_aln.bam
+samtools stats $Name/R2_aln.bam > $Name/R2_aln.stats
+grep ^SN $Name/R2_aln.stats | cut -f 2- > $Name/R2_summary.txt
+
+############## ########## ########## ###### pantro
+Name="PanTro"
+samtools view -bS $Name/PanTro_R1_aln.sam | samtools sort -@ 20 -o $Name/R1_aln.bam
+samtools index $Name/R1_aln.bam
+samtools stats $Name/R1_aln.bam > $Name/R1_aln.stats
+grep ^SN $Name/R1_aln.stats | cut -f 2- > $Name/R1_summary.txt
+
+samtools view -bS $Name/PanTro_R2_aln.sam | samtools sort -@ 20 -o $Name/R2_aln.bam
+samtools index $Name/R2_aln.bam
+samtools stats $Name/R2_aln.bam > $Name/R2_aln.stats
+grep ^SN $Name/R2_aln.stats | cut -f 2- > $Name/R2_summary.txt
+
+
+############## ########## ########## ###### pantro
+Name="RheMac"
+samtools view -bS $Name/RheMac_R1_aln.sam | samtools sort -@ 20 -o $Name/R1_aln.bam
+samtools index $Name/R1_aln.bam
+samtools stats $Name/R1_aln.bam > $Name/R1_aln.stats
+grep ^SN $Name/R1_aln.stats | cut -f 2- > $Name/R1_summary.txt
+
+samtools view -bS $Name/RheMac_R2_aln.sam | samtools sort -@ 20 -o $Name/R2_aln.bam
+samtools index $Name/R2_aln.bam
+samtools stats $Name/R2_aln.bam > $Name/R2_aln.stats
+grep ^SN $Name/R2_aln.stats | cut -f 2- > $Name/R2_summary.txt
+
+
+############## ########## ########## ###### human
+Name="Human"
+samtools view -bS $Name/HomoSap_R1_aln.sam | samtools sort -@ 20 -o $Name/R1_aln.bam
+samtools index $Name/R1_aln.bam
+samtools stats $Name/R1_aln.bam > $Name/R1_aln.stats
+grep ^SN $Name/R1_aln.stats | cut -f 2- > $Name/R1_summary.txt
+
+samtools view -bS $Name/HomoSap_R2_aln.sam | samtools sort -@ 20 -o $Name/R2_aln.bam
+samtools index $Name/R2_aln.bam
+samtools stats $Name/R2_aln.bam > $Name/R2_aln.stats
+grep ^SN $Name/R2_aln.stats | cut -f 2- > $Name/R2_summary.txt
+
+
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(stringr)
+  library(ggplot2)
+})
+
+# ---------------------------
+# 1) Paths
+# ---------------------------
+folders <- c(
+  "CalJac",
+  "PanTro",
+  "RheMac",
+  "Human"
+)
+
+base_path <- "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment"
+
+# ---------------------------
+# 2) Helper: extract error rate from summary.txt
+# ---------------------------
+get_error_rate <- function(file) {
+  # read lines
+  txt <- read_lines(file)
+  # find "error rate:"
+  line <- txt[str_detect(txt, "^error rate:")]
+  if (length(line) == 0) return(NA_real_)
+  # extract numeric value
+  val <- str_extract(line, "[0-9]\\.[0-9]+e?-?[0-9]*")
+  as.numeric(val)
+}
+
+# ---------------------------
+# 3) Loop species + R1/R2
+# ---------------------------
+df <- bind_rows(lapply(folders, function(sp) {
+  r1 <- get_error_rate(file.path(base_path, sp, "R1_summary.txt"))
+  r2 <- get_error_rate(file.path(base_path, sp, "R2_summary.txt"))
+  
+  tibble(
+    species = sp,
+    dataset = c("Second subread", "Consensus"),
+    error_rate = c(r1, r2)
+  )
+}))
+
+# add bases-per-error + label text
+df <- df %>%
+  mutate(
+    bases_per_error = 1 / error_rate,
+    label = sprintf("%.2f%% (%.0f bp/error)", error_rate * 100, bases_per_error)
+  )
+
+# keep your factor order as you set it
+df$dataset <- factor(df$dataset, levels = c("Consensus", "Second subread"))
+
+ggplot(df, aes(x = species, y = error_rate, fill = dataset)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_text(aes(label = label),
+            position = position_dodge(width = 0.8),
+            hjust = -0.2, size = 5) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  scale_fill_manual(values = c(
+    "Second subread" = "#F44336",  # red
+    "Consensus"      = "#4C9F70"   # green
+  )) +
+  labs(x = NULL, y = "Mapping error rate, %", fill = "Read Type") +
+  theme_minimal(base_size = 13) +
+  coord_flip(clip = "off") +
+  theme(
+    axis.title.y = element_blank(),
+    plot.margin = margin(5, 40, 5, 5)
+  )
+```
+
+
+
+

@@ -1,14 +1,23 @@
 ---
-title: "Untitled"
+title: "Script to quantify effect of consensus on read quality"
 output: html_document
 date: "2025-08-18"
 ---
 
+The script quantifies the difference between consensus and subreads in two ways:
+
+1. Effect on adaptor trimming: get subreads (only second position subreads) and consensus reads, trim with pychopper, plot logs of how good the adaptors are recognized 
+2. Take trimmed consensus and subreads, align to species-specific fasta, extract stats from alignemnt and plot error rate 
+
+# envs
 ```{bash}
-conda env export --no-builds --name pychopper > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/pychopper.yaml
-conda env export --no-builds --name c3poa > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/seqtk.yaml
+conda env export --no-builds --name pychopper > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/envs/pychopper.yaml
+conda env export --no-builds --name c3poa > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/envs/c3poa.yaml
+conda env export --no-builds --name minimap > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/envs/minimap.yaml
+conda env export --no-builds --name gffcompare > /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/envs/gffcompare.yaml
 ```
 
+# prep adapter config for pychopper
 ```{bash}
 
 cat > primer_config.txt <<EOF
@@ -17,6 +26,9 @@ EOF
 
 ```
 
+# prep data
+1. take subreads 
+2. take consensus reads and convert to fastq
 
 ```{bash}
 cd /work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment
@@ -42,11 +54,10 @@ seqtk seq -F 'I' CalJac/CalJac_con.fasta > CalJac/CalJac_con.fastq
 
 ```
 
+# select only the second subreads
+All subreads coming from the same original concatemer will share the same UUID, end number indicates subread 
+take only 2nd subread (count starts with 0)
 
-	•	All subreads coming from the same original concatemer will share the same UUID
-	take only 2nd subread
-	seqtk subseq R2C2_Subreads.fastq <(grep "^@" R2C2_Subreads.fastq | grep "_0" | sed 's/@//') > R2C2_firstSubread.fastq
-	
 ```{bash}
 mamba activate c3poa
 
@@ -62,7 +73,7 @@ seqtk subseq PanTro/PanTro_sub.fastq <(grep "^@" PanTro/PanTro_sub.fastq | grep 
 
 
 
-# cut adaptors
+# trim adaptors with pychopper
 
 ## Human
 ```{bash}
@@ -218,16 +229,14 @@ pychopper \
 
 
 # consensus reads are better trimmed by pychopper
-```{r}
+values were taken from terminal log output. Can be fully reproduced - no random component
 
+```{r}
 library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(tibble)
 
-# ---------------------------
-# 1) Hard-code your results
-# ---------------------------
 df <- tribble(
   ~species, ~dataset,        ~two_primers, ~rescued, ~unusable,
   "Human",  "Second subread",  73.20,        17.85,     8.95,
@@ -264,7 +273,7 @@ p <- ggplot(df_long, aes(x = dataset, y = pct, fill = component)) +
   geom_text(
     aes(label = paste0(round(pct, 1), "%")),
     position = position_stack(vjust = 0.5),  # centers label in stack
-    color = "white",                         # readable on colored bars
+    color = "white",                         
     size = 3
   ) +
   facet_wrap(~ species, ncol = 1) +
@@ -283,11 +292,10 @@ p <- ggplot(df_long, aes(x = dataset, y = pct, fill = component)) +
   ) +
   coord_flip()
 
-p
 
 ```
 
-# create minimap indices
+# create minimap indices for all species
 ```{bash}
 cd /work/vstorozhuk/final_references
 
@@ -310,7 +318,7 @@ done
 
 ```
 
-# align
+# get minimap
 ```{bash}
 mamba create -n minimap
 mamba activate minimap
@@ -360,7 +368,7 @@ conda activate gffcompare
 
 ```
 
-# index sam, turn into bam and get stats
+# index sam, turn into bam and get stats into .txt
 ```{bash}
 conda activate gffcompare
 
@@ -417,18 +425,14 @@ grep ^SN $Name/R2_aln.stats | cut -f 2- > $Name/R2_summary.txt
 
 ```
 
-
+# Plot error rate across conditions
 ```{r}
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(readr)
-  library(stringr)
-  library(ggplot2)
-})
+library(dplyr)
+library(readr)
+library(stringr)
+library(ggplot2)
 
-# ---------------------------
-# 1) Paths
-# ---------------------------
+
 folders <- c(
   "CalJac",
   "PanTro",
@@ -438,9 +442,7 @@ folders <- c(
 
 base_path <- "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment"
 
-# ---------------------------
-# 2) Helper: extract error rate from summary.txt
-# ---------------------------
+# Helper: extract error rate from summary.txt
 get_error_rate <- function(file) {
   # read lines
   txt <- read_lines(file)
@@ -452,9 +454,7 @@ get_error_rate <- function(file) {
   as.numeric(val)
 }
 
-# ---------------------------
-# 3) Loop species + R1/R2
-# ---------------------------
+
 df <- bind_rows(lapply(folders, function(sp) {
   r1 <- get_error_rate(file.path(base_path, sp, "R1_summary.txt"))
   r2 <- get_error_rate(file.path(base_path, sp, "R2_summary.txt"))
@@ -473,7 +473,6 @@ df <- df %>%
     label = sprintf("%.2f%% (%.0f bp/error)", error_rate * 100, bases_per_error)
   )
 
-# keep your factor order as you set it
 df$dataset <- factor(df$dataset, levels = c("Consensus", "Second subread"))
 
 ggplot(df, aes(x = species, y = error_rate, fill = dataset)) +
@@ -483,8 +482,8 @@ ggplot(df, aes(x = species, y = error_rate, fill = dataset)) +
             hjust = -0.2, size = 5) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
   scale_fill_manual(values = c(
-    "Second subread" = "#F44336",  # red
-    "Consensus"      = "#4C9F70"   # green
+    "Second subread" = "#F44336",  
+    "Consensus"      = "#4C9F70"   
   )) +
   labs(x = NULL, y = "Mapping error rate, %", fill = "Read Type") +
   theme_minimal(base_size = 13) +

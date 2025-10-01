@@ -1,11 +1,43 @@
 
 
+### Snakemake pipeline to process R2C2 reads ###
 
-# Snakemake pipeline to process R2C2 reads
+# Three snakefiles are provided, each runs the pipeline with distinct discovery/support threshold (minimal number of long reads needed to retain an isoform)
+- Snakefile with support threshold 1: /Snakemake_to_reconstruct_isoforms/Snakefile_s1
+- Snakefile with support threshold 2: /Snakemake_to_reconstruct_isoforms/Snakefile_s2
+- Snakefile with support threshold 3: /Snakemake_to_reconstruct_isoforms/Snakefile_s3
 
-Three snakefiles are provided, each runs the pipeline with distinct discovery/support threshold (minimal number of long reads needed to retain an isoform)
-- Snakefile with support threshold 1 [Here](/Snakemake_to_reconstruct_isoforms/Snakefile_s1)
-- Snakefile with support threshold 2 [Here](/Snakemake_to_reconstruct_isoforms/Snakefile_s2)
-- Snakefile with support threshold 3 [Here](/Snakemake_to_reconstruct_isoforms/Snakefile_s3)
 
-## Summary of scripts
+# config.yaml is the file used to define all inputs to run the pipeline
+
+
+Pathways to folders with installed tools 
+- c3poa_path: "/home/vstorozhuk/Mandalorion_notes/C3POa_new/C3POa"
+- mandalorion_path: "/home/vstorozhuk/Mandalorion_notes/Mandalorion"
+- sqanti3_path: "~/Mandalorion_notes/sqanti3/release_sqanti3"
+
+
+Pathways to folders where the input fastqs are stored, and a folder where output sample-level folders will be created
+- input_dir: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs"
+- output_dir: "/work/vstorozhuk/data/iso_pipeline/pipeline_outputs"
+
+
+References fields are used to define pathways to fasta and gtf with annotations which will be used by all tools,
+
+
+- C3POa / trimming files take pathways to fasta files with splint seqeunce, adapters and two coma-separated digits to define trimming
+- splint: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs/splint.fasta"
+- adapters: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs/PNAS2018_adapters.fasta"
+- trim: "28,2" this means trim 28bp from 5'end and 2bp from 3' 
+(2bp leaves behind a polyA tail which will be removed downstream, 
+and removing 28bp further trims leftover of the following adaptor TCGTCGGCAGCGTCAGA TGTGTATAAGAGArCAGrUGAArUrUCTGGTrGrGrG )
+
+
+Samples fields are used to pair sample names to fasta-gtf pairs
+
+
+ RnaSeq file of file names (fofn) is optional input of paired-end rna-seq fastq files used as input into sqanti3
+ Script to fetch fastqs and create fofns is at /Short_Reads/
+ 
+ CAGE field is optional inout of cage-seq peaks used as input into sqanti3 
+ 

@@ -1,0 +1,11 @@
+
+
+
+# Snakemake pipeline to process R2C2 reads
+
+Three snakefiles are provided, each runs the pipeline with distinct discovery/support threshold (minimal number of long reads needed to retain an isoform)
+- Snakefile with support threshold 1 [Here](/Snakemake_to_reconstruct_isoforms/Snakefile_s1)
+- Snakefile with support threshold 2 [Here](/Snakemake_to_reconstruct_isoforms/Snakefile_s2)
+- Snakefile with support threshold 3 [Here](/Snakemake_to_reconstruct_isoforms/Snakefile_s3)
+
+## Summary of scripts

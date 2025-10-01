@@ -34,30 +34,30 @@ rule all:
 # CONSENSUS CALLING 
 ######################## ######################## ######################## ######################## 
 
-rule consensus_calling:
-    threads: 20
-    input:
-        fastq=lambda wc: f"{config['input_dir']}/{wc.sample}.fastq",
-        splint=config["splint"]
-    output:
-        directory(f"{config['output_dir']}/{{sample}}/{{sample}}_consensus"),
-        touch(f"{config['output_dir']}/{{sample}}/{{sample}}_consensus/done.txt"),
-    params:
-        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_consensus",
-        c3poa_path=config["c3poa_path"]
-    conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/c3poa_env.yaml"
-    shell:
-        """
-        mkdir -p {params.out_dir} && \
-        python3 {params.c3poa_path}/C3POa.py \
-        -r {input.fastq} \
-        -o {params.out_dir} \
-        -s {input.splint} \
-        -n {threads} && \
-        mv {params.out_dir}* {params.out_dir}/ 2>/dev/null || true && \
-        touch {params.out_dir}/done.txt
-        """
+# rule consensus_calling:
+#     threads: 20
+#     input:
+#         fastq=lambda wc: f"{config['input_dir']}/{wc.sample}.fastq",
+#         splint=config["splint"]
+#     output:
+#         directory(f"{config['output_dir']}/{{sample}}/{{sample}}_consensus"),
+#         touch(f"{config['output_dir']}/{{sample}}/{{sample}}_consensus/done.txt"),
+#     params:
+#         out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_consensus",
+#         c3poa_path=config["c3poa_path"]
+#     conda:
+#         "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/c3poa_env.yaml"
+#     shell:
+#         """
+#         mkdir -p {params.out_dir} && \
+#         python3 {params.c3poa_path}/C3POa.py \
+#         -r {input.fastq} \
+#         -o {params.out_dir} \
+#         -s {input.splint} \
+#         -n {threads} && \
+#         mv {params.out_dir}* {params.out_dir}/ 2>/dev/null || true && \
+#         touch {params.out_dir}/done.txt
+#         """
 
 
 
@@ -66,36 +66,36 @@ rule consensus_calling:
 ######################## ######################## ######################## ######################## 
 
 
-rule postprocessing:
-    input:
-        consensus_output=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_consensus"
-    output:
-        postprocessing_done=touch(f"{config['output_dir']}/{{sample}}/{{sample}}_postprocessing/postprocessing_done.txt"),
-        processed_fasta=f"{config['output_dir']}/{{sample}}/{{sample}}_postprocessing/R2C2_full_length_consensus_reads.fasta"
-    params:
-        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing",
-        adapters=config["adapters"],
-        c3poa_path=config["c3poa_path"]
-    conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/c3poa_env.yaml"
-    shell:
-        """
-        mkdir -p {params.out_dir} && \
-        python3 {params.c3poa_path}/C3POa_postprocessing.py \
-        -i {input.consensus_output} \
-        -a {params.adapters} && \
-        
-        fasta_file=$(find {input.consensus_output} -name "R2C2_full_length_consensus_reads.fasta" | head -n 1) && \
-        
-        if [ -f "$fasta_file" ]; then
-            mv "$fasta_file" {output.processed_fasta}
-        else
-            echo "Error: R2C2_full_length_consensus_reads.fasta not found!" >&2
-            exit 1
-        fi && \
-        
-        touch {params.out_dir}/postprocessing_done.txt
-        """
+# rule postprocessing:
+#     input:
+#         consensus_output=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_consensus"
+#     output:
+#         postprocessing_done=touch(f"{config['output_dir']}/{{sample}}/{{sample}}_postprocessing/postprocessing_done.txt"),
+#         processed_fasta=f"{config['output_dir']}/{{sample}}/{{sample}}_postprocessing/R2C2_full_length_consensus_reads.fasta"
+#     params:
+#         out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing",
+#         adapters=config["adapters"],
+#         c3poa_path=config["c3poa_path"]
+#     conda:
+#         "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/c3poa_env.yaml"
+#     shell:
+#         """
+#         mkdir -p {params.out_dir} && \
+#         python3 {params.c3poa_path}/C3POa_postprocessing.py \
+#         -i {input.consensus_output} \
+#         -a {params.adapters} && \
+# 
+#         fasta_file=$(find {input.consensus_output} -name "R2C2_full_length_consensus_reads.fasta" | head -n 1) && \
+# 
+#         if [ -f "$fasta_file" ]; then
+#             mv "$fasta_file" {output.processed_fasta}
+#         else
+#             echo "Error: R2C2_full_length_consensus_reads.fasta not found!" >&2
+#             exit 1
+#         fi && \
+# 
+#         touch {params.out_dir}/postprocessing_done.txt
+#         """
 
 
 ######################## ######################## ######################## ######################## 
@@ -235,7 +235,7 @@ rule sqanti3_report_flair:
         reference_fasta=get_reference_fasta,
         reference_gtf=get_reference_gtf
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} &&
@@ -265,7 +265,7 @@ rule sqanti3_filter_flair:
         out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_S2_sqanti_filter",
         sqanti3_path=config["sqanti3_path"]
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} &&
@@ -325,7 +325,7 @@ rule sqanti3_report_mandalorion:
         reference_fasta=get_reference_fasta,
         reference_gtf=get_reference_gtf
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} &&
@@ -354,7 +354,7 @@ rule sqanti3_filter_mandalorion:
         out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_mandalorion_R2_sqanti_filter",
         sqanti3_path=config["sqanti3_path"]
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} &&
@@ -393,7 +393,7 @@ rule sqanti3_report_postfilter_mandalorion:
             if opt_cfg('cage_peaks', wc.sample) else ""
         ),
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         r"""
         mkdir -p {params.out_dir} && \
@@ -435,7 +435,7 @@ rule sqanti3_report_postfilter_flair:
             if opt_cfg('cage_peaks', wc.sample) else ""
         ),
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         r"""
         mkdir -p {params.out_dir} && \

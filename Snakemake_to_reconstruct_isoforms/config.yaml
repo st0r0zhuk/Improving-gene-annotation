@@ -32,7 +32,7 @@ references:
 
 splint: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs/splint.fasta"
 adapters: "/work/vstorozhuk/data/iso_pipeline/pipeline_inputs/PNAS2018_adapters.fasta"
-trim: "33,21"
+trim: "28,2"
 
 ######################## Samples ######################## 
 
@@ -52,8 +52,9 @@ rna_fofn:
    Barcode02: "/work/vstorozhuk/data/rna_seq_for_alignment/PanTro3/PanTro.fofn"
    Barcode03: "/work/vstorozhuk/data/rna_seq_for_alignment/Mmul10/MMul.fofn"
    Barcode04: "/work/vstorozhuk/data/rna_seq_for_alignment/CalJac4/CalJac.fofn"
-     
- 
+   
+  
+  
 ######################### CAGE ######################## 
 
 cage_peaks:

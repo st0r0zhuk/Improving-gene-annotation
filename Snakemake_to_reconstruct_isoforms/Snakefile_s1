@@ -93,27 +93,27 @@ rule all:
 # ######################## ######################## ######################## ######################## 
 # # TRIMMING 
 # ######################## ######################## ######################## ######################## 
-# 
-# rule trimming:
-#     input:
-#         fasta=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing/R2C2_full_length_consensus_reads.fasta",
-#         consensus_done=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing/postprocessing_done.txt"
-#     output:
-#         cleaned=f"{config['output_dir']}/{{sample}}/{{sample}}_trimmed/cleaned_R2C2_full_length_consensus_reads.fasta"
-#     params:
-#         trim=config["trim"],
-#         out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_trimmed",
-#         mandalorion_path=config["mandalorion_path"]
-#     conda:
-#         "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/mandalorion_env.yaml"
-#     shell:
-#         """
-#         mkdir -p {params.out_dir} && \
-#         python3 {params.mandalorion_path}/utils/removePolyA.py \
-#             -i {input.fasta} \
-#             -o {output.cleaned} \
-#             -t {params.trim}
-#         """
+
+rule trimming:
+    input:
+        fasta=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing/R2C2_full_length_consensus_reads.fasta",
+        consensus_done=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_postprocessing/postprocessing_done.txt"
+    output:
+        cleaned=f"{config['output_dir']}/{{sample}}/{{sample}}_trimmed/cleaned_R2C2_full_length_consensus_reads.fasta"
+    params:
+        trim=config["trim"],
+        out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_trimmed",
+        mandalorion_path=config["mandalorion_path"]
+    conda:
+        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/mandalorion_env.yaml"
+    shell:
+        """
+        mkdir -p {params.out_dir} && \
+        python3 {params.mandalorion_path}/utils/removePolyA.py \
+            -i {input.fasta} \
+            -o {output.cleaned} \
+            -t {params.trim}
+        """
 
 ######################## ######################## ######################## ######################## 
 # FLAIR MAP
@@ -215,7 +215,7 @@ rule sqanti3_report_flair:
         reference_fasta=get_reference_fasta,
         reference_gtf=get_reference_gtf
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} && \
@@ -242,7 +242,7 @@ rule sqanti3_filter_flair:
         out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_flair_S1_sqanti_filter",
         sqanti3_path=config["sqanti3_path"]
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} && \
@@ -277,7 +277,7 @@ rule sqanti3_report_postfilter_flair:
             if opt_cfg('cage_peaks', wc.sample) else ""
         ),
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         r"""
         mkdir -p {params.out_dir} && \
@@ -335,7 +335,7 @@ rule sqanti3_report_mandalorion:
         reference_fasta=get_reference_fasta,
         reference_gtf=get_reference_gtf
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} && \
@@ -362,7 +362,7 @@ rule sqanti3_filter_mandalorion:
         out_dir=lambda wc: f"{config['output_dir']}/{wc.sample}/{wc.sample}_mandalorion_R1_sqanti_filter",
         sqanti3_path=config["sqanti3_path"]
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         """
         mkdir -p {params.out_dir} && \
@@ -397,7 +397,7 @@ rule sqanti3_report_postfilter_mandalorion:
             if opt_cfg('cage_peaks', wc.sample) else ""
         ),
     conda:
-        "/home/vstorozhuk/Isoforms_pipeline/workflow/envs/sqanti3_v5_5_env.yaml"
+        "/work/vstorozhuk/other/sqanti3/SQANTI3.conda_env.yml"
     shell:
         r"""
         mkdir -p {params.out_dir} && \

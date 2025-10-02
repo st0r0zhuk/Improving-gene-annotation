@@ -1,0 +1,224 @@
+---
+title: "Script to visualize ATAC-Seq signal around TSS of dominant transcripts"
+output: html_document
+date: "2025-09-22"
+---
+
+Motivation: 
+more than 80% of dominant transcripts (as defined by nanopore reads) are not reference-matches. 
+Majority of these dominant have some alternative form of 5' end, and thus these TSS are not present in reference.
+So here we use ATAC-Seq data from NSC day 15 cell culture as proxy to see if the TSS become better represented with new gtf.
+
+
+# remap ATAC-Seq bam
+
+```{r}
+cd /work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal
+conda activate gffcompare
+samtools fastq -@30 "/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/WB01_DF2_Pax6_D15_ATAC_rep1_R1.trim.srt.nodup.no_chrM_MT.bam" > /work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates/rep1.fastq
+samtools fastq -@30 "/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/WB01_DF3_Pax6_D15_ATAC_rep2_R1.trim.srt.nodup.no_chrM_MT.bam" > /work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates/rep2.fastq
+
+# make reference
+cd /work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates
+conda activate bowtie2_env
+bowtie2-build --threads 30 \
+  /work/vstorozhuk/final_references/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic.fna \
+  /work/vstorozhuk/final_references/PanTro3_index
+
+# realign
+sample=rep1
+sample=rep2
+PPN=30 
+Bowtie2Index=/work/vstorozhuk/final_references/PanTro3_index
+WORKDIR=/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal
+
+bowtie2 --very-sensitive \
+  -x $Bowtie2Index \
+  -U $WORKDIR/${sample}.fastq \
+  -p $PPN \
+  -S ${sample}.sam \
+  2> ${sample}.bowtie2.log
+
+# to bam
+conda activate gffcompare
+samtools view -bS rep1.sam > rep1.bam
+samtools view -bS rep2.sam > rep2.bam
+
+# sort
+samtools sort rep1.bam -@ 30 -o rep1.sorted.bam
+samtools sort rep2.bam -@ 30 -o rep2.sorted.bam
+
+# merge and index
+samtools merge -@ 30 merged.sorted.bam rep1.sorted.bam rep2.sorted.bam
+samtools index -@ 30 merged.sorted.bam
+
+# shift cut site
+conda activate deeptools
+bamCoverage \
+  -b merged.sorted.bam \
+  -o mPanTro3_realigned_NSC_ATAC_merged_1bp_CPM.bw \
+  --binSize 1 \
+  --Offset 1 \
+  --normalizeUsing CPM \
+  -p 30
+
+```
+
+# Get beds with tss
+
+Converts each transcript to a 1-bp TSS interval:
+	-	For ‘+’: start = start, end = start + 1
+	- For ‘–’: start = end, end = end + 1
+Then build bed6
+
+# CUSTOM TSS
+```{r}
+
+PanTro_custom_gtf <-  rtracklayer::readGFF("/work/vstorozhuk/final_references/mPanTro3_extended_fixed.gtf")
+PanTro_custom <- PanTro_custom_gtf %>% filter(Dominant == "TRUE") %>% filter(type == "transcript") 
+PanTro_custom_genes <- unique(PanTro_custom$gene_id)
+
+PanTro_tss <- PanTro_custom %>%
+  filter(type == "transcript", strand %in% c("+", "-")) %>% 
+  mutate(
+    tss_start = if_else(strand == "+", start, end),
+    tss_end   = tss_start + 1
+  ) %>%
+  dplyr::select(seqid, tss_start, tss_end, gene_id, ID, strand)
+
+# Build BED6
+PanTro_bed <- PanTro_tss %>%
+  transmute(
+    chrom  = seqid,
+    start  = tss_start,
+    end    = tss_end,
+    name   = gene_id,    
+    score  = 0,          
+    strand = strand
+  )
+
+write.table(PanTro_bed,file = "/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates/PanTro_cutom_TSS.bed", 
+            quote = FALSE, sep = "\t", col.names = FALSE, row.names = FALSE)
+```
+
+## random
+```{r}
+set.seed(4345)
+PanTro_default <- rtracklayer::readGFF("/work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic_standardized.gtf")
+PanTro_default %<>% filter(gene_id %in% PanTro_custom_genes)
+
+PanTro_tss <- PanTro_default %>%
+  filter(type == "transcript", strand %in% c("+", "-")) %>% 
+   group_by(gene_id) %>%
+   slice_sample(n = 1) %>% 
+   ungroup() %>%
+   mutate(
+    tss_start = if_else(strand == "+", start, end),
+    tss_end   = tss_start + 1
+  ) %>%
+  dplyr::select(seqid, tss_start, tss_end, gene_id, ID, strand)
+
+# Build BED6
+PanTro_bed <- PanTro_tss %>%
+  transmute(
+    chrom  = seqid,
+    start  = tss_start,
+    end    = tss_end,
+    name   = gene_id,    
+    score  = 0,          
+    strand = strand
+  )
+
+write.table(PanTro_bed,file = "/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates/PanTro_randomTSS.bed", 
+            quote = FALSE, sep = "\t", col.names = FALSE, row.names = FALSE)
+
+```
+
+# Enrichment-like plot of ATAC-Seq signal around TSS
+```{r}
+
+library(seqplots)
+library(seqplots)
+
+atac_tracks <- "/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates/mPanTro3_realigned_NSC_ATAC_merged_1bp_CPM.bw"
+
+peaks <- c(
+  "/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates/PanTro_cutom_TSS.bed",  
+  "/work/vstorozhuk/export_to_git/Script_to_compare_ATAC_signal/intermediates/PanTro_randomTSS.bed"
+  )
+
+# Plot and save as png
+png("ATAC_TSS_profile.png", width = 2000, height = 1600, res = 300)
+
+res <- getPlotSetArray(
+  tracks        = atac_tracks,
+  features      = peaks,
+  refgenome     = "hg38",
+  type          = "mf",
+  add_heatmap   = FALSE,
+  xmin          = 2000,
+  xmax          = 2000,
+  bin           = 1,
+  ignore_strand = FALSE
+)
+
+cols <- c("#34B3F1", "#FD841F")   
+
+plotAverage(
+  plotset         = res,                
+  labels          = c("Dominant", "Random"),
+  main            = "ATAC around TSS (±1 kb)",
+  xlab            = "",
+  ylab            = "CPM",
+  error.estimates = TRUE,
+  yaxs            = "i",
+  legend          = TRUE,
+  legend_pos      = "topright",
+  cex.axis        = 15,
+  cex.lab         = 15,
+  xaxt            = "n",
+  cex.main        = 15,
+  cex.legend      = 15,
+  pointsize       = 15,
+  colvec          = cols
+)
+
+axis(
+  side   = 1,
+  labels = c("-2kb", "-1kb", "TSS→", "+1kb", "+2kb"),
+  at     = c(-2000, -1000, 0, 1000, 2000),
+  pos    = 0,
+  tick   = TRUE
+)
+
+dev.off()
+```
+
+# Heatmap of TSS ATAC-Seq signal
+```{r}
+
+png("ATAC_TSS_heatmap.png", width = 2200, height = 2000, res = 300)
+
+res_1kb <- getPlotSetArray(
+  tracks        = atac_tracks,
+  features      = peaks,
+  refgenome     = "hg38",
+  type          = "mf",
+  add_heatmap   = TRUE,
+  xmin          = 1000,
+  xmax          = 1000,
+  bin           = 1,
+  ignore_strand = FALSE
+)
+
+plotHeatmap(
+  plotset = res_1kb,
+  labels  = c("Dominant", "Random"),
+  main    = "ATAC heatmap around TSS (±1 kb)",
+  colvec  = cols
+)
+
+dev.off()
+
+```
+

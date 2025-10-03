@@ -9,3 +9,15 @@
 - Snakemake files and config to run pipeline at different isoform support levels (s1,s2,s3) [Scripts folder](Snakemake_to_reconstruct_isoforms/)
 - Scripts for explorative analysis of the discovered isoforms [Scripts file](Scripts_for_analysis_of_isoforms/plot_overall_isoform_statistics.Rmd)
 - Scripts to add SQANTI3-filtered isoforms supported by at least 2 long reads from Mandalorion to the default gtf per species [Scripts folder](Scripts_for_merging_gtfs_and_qc/)
+
+
+
+
+# Highlights of the project
+
+
+
+## Read Processing is wrapped in Snakemake pipeline ## 
+
+
+![](/Snakemake_to_reconstruct_isoforms/rulegraph.png)

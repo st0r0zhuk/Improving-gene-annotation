@@ -2,6 +2,14 @@
 
 ### Snakemake pipeline to process R2C2 reads ###
 
+To run:
+1. Rename any of the Snakefile_s# to Snakefile
+2. Provide paths to mandatory inputs in config.yaml
+3. From Snakemake file run from snakemake conda env: snakemake --use-conda
+
+
+### Description of this folder content ### 
+
 # Three snakefiles are provided, each runs the pipeline with distinct discovery/support threshold (minimal number of long reads needed to retain an isoform)
 - Snakefile with support threshold 1: /Snakemake_to_reconstruct_isoforms/Snakefile_s1
 - Snakefile with support threshold 2: /Snakemake_to_reconstruct_isoforms/Snakefile_s2
@@ -11,7 +19,7 @@
 # config.yaml is the file used to define all inputs to run the pipeline
 
 
-Pathways to folders with installed tools 
+Pathways to folders with installed tools from github (look up yamls in envs/ if conflicts arise)
 - c3poa_path: "/home/vstorozhuk/Mandalorion_notes/C3POa_new/C3POa"
 - mandalorion_path: "/home/vstorozhuk/Mandalorion_notes/Mandalorion"
 - sqanti3_path: "~/Mandalorion_notes/sqanti3/release_sqanti3"
@@ -39,5 +47,5 @@ Samples fields are used to pair sample names to fasta-gtf pairs
  RnaSeq file of file names (fofn) is optional input of paired-end rna-seq fastq files used as input into sqanti3
  Script to fetch fastqs and create fofns is at /Short_Reads/
  
- CAGE field is optional inout of cage-seq peaks used as input into sqanti3 
+ CAGE field is optional input of cage-seq peaks used as input into sqanti3 
  

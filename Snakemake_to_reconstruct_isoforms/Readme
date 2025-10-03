@@ -5,7 +5,7 @@
 To run:
 1. Rename any of the Snakefile_s# to Snakefile
 2. Provide paths to mandatory inputs in config.yaml
-3. From Snakemake file run from snakemake conda env: snakemake --use-conda
+3. From folder with Snakemake file, and from snakemake conda env run: snakemake --use-conda
 
 
 ### Description of this folder content ### 

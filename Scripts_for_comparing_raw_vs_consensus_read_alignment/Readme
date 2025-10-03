@@ -1,0 +1,9 @@
+
+
+### Description of this folder ###
+
+align_raw_vs_consensus.Rmd is the script to quantify/compare trimming rate and alignment errors between subreads and consensus-corrected reads:
+- Effect on adaptor trimming: get subreads (only second position subreads) and consensus reads, trim with pychopper, plot how good the adaptors are recognized 
+- Take trimmed consensus and subreads, align with minimap to species-specific fasta, extract stats from alignemnt and plot error rate 
+Folders with species names contain intermediate files from this analysis
+

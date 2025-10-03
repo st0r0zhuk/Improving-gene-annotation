@@ -249,10 +249,24 @@ df <- tribble(
   "PanTro", "Consensus",      72.99,        23.99,     3.02
 )
 
-df <- df %>% mutate(
-  species = factor(species, levels = c("Human","CalJac","RheMac","PanTro")),
-  dataset = factor(dataset, levels = c("Consensus", "Second subread"))
+species_lut <- c(
+  Human   = "Homo sapiens",
+  PanTro  = "Pan troglodytes",
+  RheMac  = "Macaca mulatta",
+  CalJac  = "Callithrix jacchus"
 )
+
+df <- df %>%
+  mutate(
+    species = recode(species, !!!species_lut),
+    species = factor(species,
+      levels = c("Macaca mulatta",
+                 "Homo sapiens",
+                 "Pan troglodytes",
+                 "Callithrix jacchus")),
+    dataset = factor(dataset,
+      levels = c("Consensus", "Second subread"))
+  )
 
 
 # Long format for stacking
@@ -265,6 +279,9 @@ df_long <- df %>%
       labels = c("Two primers","Rescued","Unusable")
     )
   )
+
+
+
 
 # Stacked bars: x = dataset, y = percent, facet by species
 # Add labels for each stacked segment
@@ -282,9 +299,7 @@ p <- ggplot(df_long, aes(x = dataset, y = pct, fill = component)) +
   scale_fill_manual(values = c("Two primers" = "#4C9F70",
                                "Rescued"     = "#84C999",
                                "Unusable"    = "#F44336")) +
-  labs(x = NULL, y = "Percent of reads", fill = NULL,
-       title = "Status of adaptor trimming with Pychopper") + 
-  theme_minimal(base_size = 12) +
+  labs(x = NULL, y = "Percent of reads", fill = NULL)  +  theme_minimal(base_size = 12) +
   theme(
     legend.position = "bottom",
     panel.grid.major.x = element_blank(),
@@ -292,6 +307,7 @@ p <- ggplot(df_long, aes(x = dataset, y = pct, fill = component)) +
   ) +
   coord_flip()
 
+ggsave("/work/vstorozhuk/data/plots/trimming_rate.png", p, dpi = 600,width = 10,height = 6)
 
 ```
 
@@ -475,7 +491,27 @@ df <- df %>%
 
 df$dataset <- factor(df$dataset, levels = c("Consensus", "Second subread"))
 
-ggplot(df, aes(x = species, y = error_rate, fill = dataset)) +
+
+
+species_lut <- c(
+  Human   = "Homo sapiens",
+  PanTro  = "Pan troglodytes",
+  RheMac  = "Macaca mulatta",
+  CalJac  = "Callithrix jacchus"
+)
+
+df <- df %>%
+  mutate(
+    species = recode(species, !!!species_lut),
+    species = factor(species,
+      levels = c("Macaca mulatta",
+                 "Homo sapiens",
+                 "Pan troglodytes",
+                 "Callithrix jacchus"))
+  )
+
+
+error_rate <- ggplot(df, aes(x = species, y = error_rate, fill = dataset)) +
   geom_col(position = position_dodge(width = 0.8), width = 0.7) +
   geom_text(aes(label = label),
             position = position_dodge(width = 0.8),
@@ -490,8 +526,12 @@ ggplot(df, aes(x = species, y = error_rate, fill = dataset)) +
   coord_flip(clip = "off") +
   theme(
     axis.title.y = element_blank(),
-    plot.margin = margin(5, 40, 5, 5)
+    axis.text.y  = element_text(angle = 90, hjust = 0.5, vjust = 0.5),
+    plot.margin  = margin(5, 40, 5, 5)
   )
+
+ggsave("/work/vstorozhuk/data/plots/mapping_error_rate.png", error_rate, dpi = 600,width = 14,height = 6)
+
 ```
 
 

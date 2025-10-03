@@ -1,0 +1,462 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-08-22"
+---
+
+
+# Gene body coverage 
+
+```{r}
+
+species <- list(
+  "Callithrix jacchus" = list(
+    gtf = "/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf",
+    bam = "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/CalJac/R2_aln.bam"
+  ),
+  "Homo sapiens" = list(
+    gtf = "/work/vstorozhuk/data/reference/Homo_sapiens.GRCh38.114.gtf",
+    bam = "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/Human/R2_aln.bam"
+  ),
+  "Pan troglodytes" = list(
+    gtf = "/work/vstorozhuk/data/reference/GCF_028858775.2_NHGRI_mPanTro3-v2.0_pri_genomic_standardized.gtf",
+    bam = "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/PanTro/R2_aln.bam"
+  ),
+  "Macaca mulatta" = list(
+    gtf = "/work/vstorozhuk/data/reference/GCF_003339765.1_Mmul_10_genomic_standardized.gtf",
+    bam = "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/RheMac/R2_aln.bam"
+  )
+)
+```
+
+
+# get longest spliced transcript per gene
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicFeatures)
+  library(dplyr)
+  library(rtracklayer)
+})
+
+# --- load txdb from GTF ---
+gtf <- rtracklayer::readGFF("/work/vstorozhuk/data/reference/GCF_011100555.1_mCalJa1.2.pat.X_genomic.standardized.gtf")
+
+pc_gene_ids <- gtf %>%
+  filter(type == "gene",
+         gene_biotype == "protein_coding",
+         is.na(pseudo) | pseudo != "true") %>%
+  pull(gene_id) %>%
+  unique()
+
+# Sum exon widths per transcript; also keep transcript span for coordinates
+tx_exon_sums <- gtf %>%
+  filter(type == "exon",
+         gene_id %in% pc_gene_ids,
+         !is.na(transcript_id)) %>%
+  group_by(gene_id, transcript_id, seqid, strand) %>%
+  summarise(
+    spliced_len = sum(end - start + 1, na.rm = TRUE),
+    tx_start    = min(start, na.rm = TRUE),
+    tx_end      = max(end, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Pick the longest (by spliced length) per gene
+longest_tx_spliced <- tx_exon_sums %>%
+  group_by(gene_id) %>%
+  slice_max(order_by = spliced_len, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  dplyr::select(seqid, start = tx_start, end = tx_end, strand,
+         gene_id, transcript_id, spliced_len)
+
+
+shorter_names <- longest_tx_spliced %>% filter(spliced_len > 500 & spliced_len <= 3000) %>% pull(transcript_id)
+
+shorter_models <- gtf %>% filter(transcript_id %in% shorter_names) %>% filter(type == "exon") %>% dplyr::select(seqid:transcript_id)
+
+
+```
+
+# calculate exon coverage
+```{r}
+exon_df  <- shorter_models
+bam_file <- "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/CalJac/R2_aln.bam"
+```
+
+
+```{r}
+# ---- packages ----
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(forcats)
+  library(purrr)
+  library(GenomicRanges)
+  library(Rsamtools)
+  library(GenomicAlignments)
+})
+
+# ------------------- INPUTS -------------------
+# your exon table as shown in the message:
+# shorter_models <- <data.frame with columns: seqid, start, end, strand, gene_id, transcript_id, ...>
+bam_file <- "/work/vstorozhuk/export_to_git/Scripts_for_comparing_raw_vs_consensus_read_alignment/CalJac/R2_aln.bam"
+NBINS    <- 50L
+
+# ---- make GRanges of exons ----
+ex_df <- shorter_models %>%
+  dplyr::select(seqid, start, end, strand, gene_id, transcript_id) %>%
+  mutate(
+    seqid  = as.character(seqid),
+    strand = ifelse(strand %in% c("+","-"), strand, "*")
+  )
+
+ex_gr <- GRanges(
+  seqnames = ex_df$seqid,
+  ranges   = IRanges(ex_df$start, ex_df$end),
+  strand   = ex_df$strand
+)
+mcols(ex_gr)$gene_id       <- ex_df$gene_id
+mcols(ex_gr)$transcript_id <- ex_df$transcript_id
+
+# split by chromosome to read coverage efficiently
+ex_by_chr <- split(ex_gr, as.character(seqnames(ex_gr)))
+
+# ---- open BAM (needs .bai alongside) ----
+bf <- BamFile(bam_file, yieldSize = 1e6)
+
+# ---- helper: bin a single transcript's coverage vector into NBINS ----
+bin_coverage_vec <- function(cov_vec, nbins = NBINS) {
+  L <- length(cov_vec)
+  if (L == 0) return(tibble(bin = integer(), mean_cov = numeric()))
+  # map 1..L into 1..nbins (percentile bins)
+  bins <- ceiling(seq_len(L) * nbins / L)
+  tibble(bin = bins, cov = cov_vec) |>
+    group_by(bin) |>
+    summarise(mean_cov = mean(cov, na.rm = TRUE), .groups = "drop")
+}
+
+# ---- main: compute binned coverage per transcript ----
+message("Computing coverage…")
+per_chr_results <- vector("list", length(ex_by_chr))
+names(per_chr_results) <- names(ex_by_chr)
+
+for (chr in names(ex_by_chr)) {
+  ex_chr <- ex_by_chr[[chr]]
+
+  # compact window for this chromosome
+  win <- GRanges(chr, IRanges(min(start(ex_chr)), max(end(ex_chr))))
+  param <- ScanBamParam(which = win, flag = scanBamFlag(isUnmappedQuery = FALSE))
+
+  cov_list <- coverage(bf, param = param)
+  if (!chr %in% names(cov_list)) next
+  cov_rle <- cov_list[[chr]]
+
+  # split the exons by transcript
+  ex_by_tx <- split(ex_chr, ex_chr$transcript_id)
+
+  tx_results <- lapply(ex_by_tx, function(ex_tx) {
+    strand_tx <- as.character(strand(ex_tx)[1])
+
+    # order exons along transcript 5′→3′
+    ord <- if (strand_tx == "+") order(start(ex_tx)) else order(start(ex_tx), decreasing = TRUE)
+    ex_tx <- ex_tx[ord]
+
+    # pull coverage for each exon as a base-level vector and concatenate
+    v <- Views(cov_rle, ranges(ex_tx))
+    cov_vec <- unlist(lapply(seq_len(length(v)), function(i) as.integer(v[[i]])), use.names = FALSE)
+
+    # bin to percentiles
+    binned <- bin_coverage_vec(cov_vec, NBINS)
+    if (nrow(binned) == 0) return(NULL)
+
+    tibble(
+      gene_id       = mcols(ex_tx)$gene_id[1],
+      transcript_id = mcols(ex_tx)$transcript_id[1]
+    ) |>
+      crossing(binned)
+  })
+
+  per_chr_results[[chr]] <- bind_rows(tx_results)
+}
+
+bin_cov <- bind_rows(per_chr_results)
+
+
+# Option A: explicit denom + base ifelse()
+bin_cov_scaled <- bin_cov %>%
+  group_by(transcript_id) %>%
+  mutate(
+    denom = max(mean_cov, na.rm = TRUE),
+    scaled_cov = ifelse(denom > 0, mean_cov / denom, 0)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-denom)
+```
+
+
+```{r}
+# choose a gene to visualize; change as needed (e.g., "FMO5", "PDZK1", "RNF115", etc.)
+gene_to_plot <- "GAPDH"
+
+df_plot <- bin_cov_scaled %>%
+  filter(gene_id == gene_to_plot) %>%
+  group_by(transcript_id) %>%
+  mutate(total_cov = sum(mean_cov, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(transcript_id = fct_reorder(transcript_id, total_cov, .desc = TRUE))
+
+if (nrow(df_plot) == 0) {
+  message("No data for gene: ", gene_to_plot)
+} else {
+  ggplot(df_plot, aes(x = bin, y = transcript_id, fill = scaled_cov)) +
+    geom_tile() +
+    scale_fill_viridis_c(name = "Scaled mean depth\n(per transcript)", limits = c(0, 1)) +
+    labs(x = "Transcript bins: 5′ → 3′", y = "Transcript ID",
+         title = paste0("Gene body coverage (", gene_to_plot, ")")) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.ticks = element_blank(),
+      panel.grid = element_blank()
+    )
+}
+
+```
+# plot
+
+```{r}
+
+LEN_RANGE <- c(500, 4000) 
+NBINS    <- 50L
+
+# ---- helper: bin a single transcript's coverage vector into NBINS ----
+bin_coverage_vec <- function(cov_vec, nbins = NBINS) {
+  L <- length(cov_vec)
+  if (L == 0) return(tibble(bin = integer(), mean_cov = numeric()))
+  # map 1..L into 1..nbins (percentile bins)
+  bins <- ceiling(seq_len(L) * nbins / L)
+  tibble(bin = bins, cov = cov_vec) |>
+    group_by(bin) |>
+    summarise(mean_cov = mean(cov, na.rm = TRUE), .groups = "drop")
+}
+```
+
+
+
+```{r}
+get_longest_tx_exons <- function(gtf_path, len_range = c(0, Inf)) {
+  gtf <- rtracklayer::readGFF(gtf_path)
+
+  gene_tbl <- gtf %>% dplyr::filter(type == "gene")
+
+  # Harmonize biotype column across NCBI/Ensembl
+  if (!"gene_biotype" %in% names(gene_tbl) && "gene_type" %in% names(gene_tbl)) {
+    gene_tbl <- dplyr::rename(gene_tbl, gene_biotype = gene_type)
+  }
+
+  # Keep only protein-coding if the info exists
+  if ("gene_biotype" %in% names(gene_tbl)) {
+    gene_tbl <- gene_tbl %>% dplyr::filter(gene_biotype == "protein_coding")
+  }
+
+  # Drop pseudogenes when possible
+  if ("pseudo" %in% names(gene_tbl)) {
+    gene_tbl <- gene_tbl %>% dplyr::filter(is.na(pseudo) | pseudo != "true")
+  } else if ("gene_biotype" %in% names(gene_tbl)) {
+    gene_tbl <- gene_tbl %>% dplyr::filter(!grepl("pseudogene", gene_biotype, ignore.case = TRUE))
+  }
+
+  pc_gene_ids <- gene_tbl %>% dplyr::pull(gene_id) %>% unique()
+
+  # Exon table (restrict to PC genes only if we found any)
+  exon_tbl <- gtf %>%
+    dplyr::filter(type == "exon", !is.na(transcript_id)) %>%
+    dplyr::filter(if (length(pc_gene_ids) > 0) gene_id %in% pc_gene_ids else TRUE) %>%
+    dplyr::select(seqid, start, end, strand, gene_id, transcript_id)
+
+  # Spliced length per transcript and longest per gene
+  tx_exon_sums <- exon_tbl %>%
+    dplyr::group_by(gene_id, transcript_id, seqid, strand) %>%
+    dplyr::summarise(
+      spliced_len = sum(end - start + 1, na.rm = TRUE),
+      tx_start    = min(start, na.rm = TRUE),
+      tx_end      = max(end, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::group_by(gene_id) %>%
+    dplyr::slice_max(order_by = spliced_len, n = 1, with_ties = FALSE) %>%
+    dplyr::ungroup()
+
+  keep_tx <- tx_exon_sums %>%
+    dplyr::filter(spliced_len >= len_range[1], spliced_len <= len_range[2]) %>%
+    dplyr::pull(transcript_id)
+
+  exons <- exon_tbl %>% dplyr::filter(transcript_id %in% keep_tx)
+
+  list(exons = exons, longest_meta = tx_exon_sums)
+}
+
+binned_cov_from_exons <- function(exon_df, bam_file, nbins = NBINS) {
+  ex_df <- exon_df %>%
+    dplyr::mutate(
+      seqid  = as.character(seqid),
+      strand = ifelse(strand %in% c("+","-"), strand, "*")
+    )
+
+  ex_gr <- GenomicRanges::GRanges(
+    seqnames = ex_df$seqid,
+    ranges   = IRanges::IRanges(ex_df$start, ex_df$end),
+    strand   = ex_df$strand
+  )
+  mcols(ex_gr)$gene_id       <- ex_df$gene_id
+  mcols(ex_gr)$transcript_id <- ex_df$transcript_id
+
+  ex_by_chr <- split(ex_gr, as.character(GenomicRanges::seqnames(ex_gr)))
+  bf <- Rsamtools::BamFile(bam_file, yieldSize = 1e6)
+  bam_chrs <- names(Rsamtools::scanBamHeader(bf)$targets)
+
+  map_chr_name <- function(chr) {
+    if (chr %in% bam_chrs) chr
+    else if (paste0("chr", chr) %in% bam_chrs) paste0("chr", chr)
+    else if (sub("^chr", "", chr) %in% bam_chrs) sub("^chr", "", chr)
+    else NA_character_
+  }
+
+  per_chr_results <- vector("list", length(ex_by_chr))
+  names(per_chr_results) <- names(ex_by_chr)
+
+  for (chr in names(ex_by_chr)) {
+    ex_chr <- ex_by_chr[[chr]]
+    chr_use <- map_chr_name(chr)
+    if (is.na(chr_use)) next
+
+    win <- GenomicRanges::GRanges(chr_use, IRanges::IRanges(min(start(ex_chr)), max(end(ex_chr))))
+    param <- Rsamtools::ScanBamParam(which = win, flag = Rsamtools::scanBamFlag(isUnmappedQuery = FALSE))
+
+    cov_list <- GenomicAlignments::coverage(bf, param = param)
+    if (!chr_use %in% names(cov_list)) next
+    cov_rle <- cov_list[[chr_use]]
+
+    ex_by_tx <- split(ex_chr, ex_chr$transcript_id)
+    tx_results <- lapply(ex_by_tx, function(ex_tx) {
+      strand_tx <- as.character(strand(ex_tx)[1])
+      ord <- if (strand_tx == "+") order(start(ex_tx)) else order(start(ex_tx), decreasing = TRUE)
+      ex_tx <- ex_tx[ord]
+
+      v <- IRanges::Views(cov_rle, ranges(ex_tx))
+      cov_vec <- unlist(lapply(seq_len(length(v)), function(i) as.integer(v[[i]])), use.names = FALSE)
+
+      binned <- bin_coverage_vec(cov_vec, nbins)
+      if (nrow(binned) == 0) return(NULL)
+
+      tibble::tibble(gene_id = mcols(ex_tx)$gene_id[1],
+                     transcript_id = mcols(ex_tx)$transcript_id[1]) %>%
+        tidyr::crossing(binned)
+    })
+
+    per_chr_results[[chr]] <- dplyr::bind_rows(tx_results)
+  }
+
+  bin_cov <- dplyr::bind_rows(per_chr_results)
+
+  bin_cov %>%
+    dplyr::group_by(transcript_id) %>%
+    dplyr::mutate(denom = max(mean_cov, na.rm = TRUE),
+                  scaled_cov = ifelse(denom > 0, mean_cov / denom, 0)) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-denom)
+}
+
+make_heatmap_and_stats <- function(bin_cov_scaled, sp_name) {
+  # order transcripts by 5'→3' center-of-mass (bias)
+  bias_df <- bin_cov_scaled %>%
+    group_by(transcript_id) %>%
+    summarise(
+      wsum = sum(scaled_cov, na.rm = TRUE),
+      bias = ifelse(wsum > 0, sum(bin * scaled_cov, na.rm = TRUE) / wsum, NA_real_),
+      .groups = "drop"
+    ) %>%
+    filter(wsum > 0 & !is.na(bias))
+
+  levels_tx <- bias_df %>% arrange(bias) %>% pull(transcript_id)
+
+  tx_cov_bias <- bin_cov_scaled %>%
+    filter(transcript_id %in% levels_tx) %>%
+    mutate(transcript_id = factor(transcript_id, levels = levels_tx))
+
+  NB <- max(as.integer(tx_cov_bias$bin), na.rm = TRUE)
+  tx_cov_bias_rect <- tx_cov_bias %>%
+    mutate(bin = as.integer(bin)) %>%
+    group_by(transcript_id) %>%
+    complete(bin = 1:NB, fill = list(scaled_cov = 0)) %>%
+    ungroup()
+
+  bin_stats <- tx_cov_bias_rect %>%
+    group_by(bin) %>%
+    summarise(
+      mean_cov = mean(scaled_cov, na.rm = TRUE),
+      sd_cov   = sd(scaled_cov,   na.rm = TRUE),
+      n        = sum(!is.na(scaled_cov)),
+      q25      = quantile(scaled_cov, 0.25, na.rm = TRUE),
+      q75      = quantile(scaled_cov, 0.75, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(se_cov = sd_cov / sqrt(pmax(n, 1)),
+           ymin   = pmax(0, mean_cov - se_cov),
+           ymax   = pmin(1, mean_cov + se_cov))
+
+  # plots
+  p_heat <- ggplot(tx_cov_bias, aes(x = bin, y = transcript_id, fill = scaled_cov)) +
+    geom_tile() +
+    scale_fill_viridis_c(name = "Scaled mean depth", limits = c(0, 1)) +
+    labs(x = "Transcript bins: 5′ → 3′",
+         y = "Longest transcript per protein coding gene",
+         title = "Longest transcript per gene body coverage",
+         subtitle = sp_name) +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          panel.grid = element_blank())
+
+ p_ribbon <- ggplot(bin_stats, aes(x = bin, y = mean_cov)) +
+  geom_line(size = 1.1) +   # no ribbon
+  labs(x = "Transcript bins: 5′ → 3′",
+       y = "Scaled coverage",
+       title = "Transcript body coverage",
+       subtitle = sp_name) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+
+  list(heatmap = p_heat, ribbon = p_ribbon)
+}
+
+# ---------- Run for all species & assemble ----------
+plots <- imap(species, function(sp, nm) {
+  ex <- get_longest_tx_exons(sp$gtf, LEN_RANGE)$exons
+  bc <- binned_cov_from_exons(ex, sp$bam, NBINS)
+  make_heatmap_and_stats(bc, nm)
+})
+
+top_row <- wrap_plots(lapply(plots, `[[`, "heatmap"), nrow = 1, guides = "collect") &
+  theme(plot.title = element_blank())
+
+bottom_row <- wrap_plots(lapply(plots, `[[`, "ribbon"), nrow = 1) &
+  theme(plot.title = element_blank())
+
+final_plot <- (top_row / bottom_row) +
+  plot_layout(heights = c(3, 2), guides = "collect") &
+  theme(legend.position = "right")
+
+final_plot
+
+ggsave(
+  "/work/vstorozhuk/data/plots/gene_body_cov.png",
+  plot   = final_plot,
+  width  = 18,
+  height = 12,
+  dpi    = 600
+)
+```
+
+
+

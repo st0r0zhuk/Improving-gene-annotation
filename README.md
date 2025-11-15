@@ -1,4 +1,4 @@
-# Improving-gene-annotation-with-R2C2
+# Improving gene annotation with R2C2
 
 ![Visual Summary of the Project](Isoforms.png)
 
@@ -12,12 +12,24 @@
 
 
 
-
 # Highlights of the project
 
+## Abstract 
+
+We applied Oxford Nanopore R2C2 sequencing to cortical organoids from human, chimpanzee, rhesus macaque, and marmoset to extend transcript representations in reference annotations.  Consensus correction significantly reduced error rates and improved read quality. Isoform reconstruction with most common tools - Mandalorion and FLAIR revealed complementary strengths of the two published methods, with Mandalorion capturing more novel isoforms and FLAIR favoring reference-concordant models. After SQANTI3-based filtering, thousands of high-confidence isoforms were retained, dominated by alternative transcript ends and supported by orthogonal data and targeted PCR validation. Incorporating these isoforms into annotations enhanced transcription start site signal in ATAC-seq and improved short-read gene assignment, reducing unannotated read fractions. Beyond providing a resource of improved annotations, this work illustrates both the challenges of long-read transcriptomics and the potential of in-house  efforts to advance gene annotation in underrepresented species such as non-human primates.
 
 
-## Read Processing is wrapped in Snakemake pipeline ## 
+![Main Workflow](graphics/workflow.png)
 
+
+## R2C2 Approach Increased Adaptor Recognition and Reduced Error Rate in Nanopore Long Reads 
+
+![](/Scripts_for_comparing_raw_vs_consensus_read_alignment/combined.png)
+
+
+## Read Processing is Wrapped in Snakemake Pipeline 
 
 ![](/Snakemake_to_reconstruct_isoforms/rulegraph.png)
+
+
+## Extended reference improved ATAC-Seq TSS-signal and reduced N_noFeature mapping metric 
